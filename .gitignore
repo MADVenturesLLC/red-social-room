@@ -1,0 +1,18 @@
+# Secrets never enter the repo (TECH-PLAN-v1.md section 3, "Secrets")
+.env
+.env.*
+.envrc
+.npmrc
+*.key
+*.pem
+id_rsa*
+id_ed25519*
+credentials*.json
+node_modules/
+# transient spend-guard lock
+spike-results/ledger.lock
+# crash leftovers of atomic writes: ledger.json.tmp-<pid> and <image>.jpg.tmp
+# (one pattern covers both; it also hides names like x.tmpl, so don't name tracked files *.tmp*)
+*.tmp*
+# macOS (the app runs on the iMac first, FD 2)
+.DS_Store

@@ -1,0 +1,141 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.x.ai/v1/image-generation-models",
+    "headers": {
+      "Authorization": "[REDACTED]"
+    },
+    "body": null
+  },
+  "response": {
+    "outcome": "ok",
+    "status": 200,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "*",
+      "cf-cache-status": "DYNAMIC",
+      "cf-ray": "a450bb86ed086e09-PDX",
+      "connection": "keep-alive",
+      "content-encoding": "gzip",
+      "content-type": "application/json",
+      "date": "Sun, 04 Oct 2026 02:24:49 GMT",
+      "server": "cloudflare",
+      "set-cookie": "[REDACTED]",
+      "strict-transport-security": "max-age=31536000",
+      "traceparent": "00-f0bb3e201d888f4cb787a7cbe414b764-50c076e90009240d-01",
+      "transfer-encoding": "chunked",
+      "vary": "origin, access-control-request-method, access-control-request-headers",
+      "x-data-retention": "general",
+      "x-metrics-e2e-ms": "0.2",
+      "x-request-id": "36095820-7ed8-9c6d-81bf-b73308e40b1f",
+      "x-zero-data-retention": "false"
+    },
+    "body": {
+      "models": [
+        {
+          "id": "grok-imagine-image",
+          "fingerprint": "fp_750f5052a8",
+          "max_prompt_length": 16000,
+          "created": 1769558400,
+          "object": "model",
+          "owned_by": "xai",
+          "version": "1.0",
+          "input_modalities": [
+            "text",
+            "image"
+          ],
+          "output_modalities": [
+            "image"
+          ],
+          "image_price": 200000000,
+          "aliases": [
+            "grok-imagine-image-2026-03-02"
+          ]
+        },
+        {
+          "id": "grok-imagine-image-2.0",
+          "fingerprint": "fp_e15b3a1fcc",
+          "max_prompt_length": 64000,
+          "created": 1786147200,
+          "object": "model",
+          "owned_by": "xai",
+          "version": "1.0",
+          "input_modalities": [
+            "text",
+            "image"
+          ],
+          "output_modalities": [
+            "image"
+          ],
+          "image_price": 600000000,
+          "pricing": [
+            {
+              "quality": "low",
+              "resolution": "1k",
+              "price_per_image": 400000000
+            },
+            {
+              "quality": "low",
+              "resolution": "2k",
+              "price_per_image": 600000000
+            },
+            {
+              "quality": "low",
+              "resolution": "1.5k",
+              "price_per_image": 500000000
+            },
+            {
+              "quality": "medium",
+              "resolution": "1k",
+              "price_per_image": 600000000
+            },
+            {
+              "quality": "medium",
+              "resolution": "2k",
+              "price_per_image": 800000000
+            },
+            {
+              "quality": "medium",
+              "resolution": "1.5k",
+              "price_per_image": 700000000
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "grok-imagine-image-quality",
+          "fingerprint": "fp_cc7863a71d",
+          "max_prompt_length": 16000,
+          "created": 1775174400,
+          "object": "model",
+          "owned_by": "xai",
+          "version": "1.0",
+          "input_modalities": [
+            "text",
+            "image"
+          ],
+          "output_modalities": [
+            "image"
+          ],
+          "image_price": 500000000,
+          "aliases": [
+            "grok-imagine-image-quality-20260403",
+            "grok-imagine-image-quality-latest",
+            "grok-imagine-image-pro"
+          ]
+        }
+      ]
+    }
+  },
+  "latency_ms": 181,
+  "total_ms": 194,
+  "attempts": [
+    {
+      "started_at": "2026-10-03T22:24:49-04:00",
+      "status": 200,
+      "latency_ms": 181,
+      "retry_after": null
+    }
+  ],
+  "retry_decision": "no retry needed"
+}

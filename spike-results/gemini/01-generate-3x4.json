@@ -1,0 +1,135 @@
+{
+  "label": "01-generate-3x4",
+  "provider": "google",
+  "model_requested": "gemini-3.1-flash-image",
+  "cost": {
+    "usd": 0.0685,
+    "basis": "estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 26 tok x $0.50/M + text 429 + thought 0 tok x $3/M + image 1120 tok x $60/M; Gemini returns no billed-cost field",
+    "billed": false
+  },
+  "ledger_entry_id": "6f9f03c3-d7af-4257-9878-ab77639b7d60",
+  "request": {
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/interactions",
+    "headers": {
+      "Content-Type": "application/json",
+      "Api-Revision": "2026-05-20",
+      "x-goog-api-key": "[REDACTED]"
+    },
+    "body": {
+      "model": "gemini-3.1-flash-image",
+      "input": "A friendly orange tabby cat sitting on a wooden windowsill next to a small potted green plant, soft morning light, photorealistic.",
+      "response_format": {
+        "type": "image",
+        "aspect_ratio": "3:4",
+        "image_size": "1K"
+      }
+    }
+  },
+  "response": {
+    "outcome": "ok",
+    "status": 200,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-type": "application/json",
+      "date": "Sun, 04 Oct 2026 02:25:41 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "server-timing": "gfet4t7; dur=8999",
+      "transfer-encoding": "chunked",
+      "vary": "Origin, X-Origin, Referer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "SAMEORIGIN",
+      "x-xss-protection": "0"
+    },
+    "body": {
+      "id": "v1_ChZITG5CYXRpZE1wWExfUFVQOGNTN2NREhZITG5CYXRpZE1wWExfUFVQOGNTN2NR",
+      "status": "completed",
+      "usage": {
+        "total_tokens": 1575,
+        "total_input_tokens": 26,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 26
+          }
+        ],
+        "total_cached_tokens": 0,
+        "total_output_tokens": 1549,
+        "output_tokens_by_modality": [
+          {
+            "modality": "image",
+            "tokens": 1120
+          }
+        ],
+        "total_tool_use_tokens": 0,
+        "total_thought_tokens": 0,
+        "raw_prompt_token": 468,
+        "model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 468
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 431
+              }
+            ]
+          }
+        ],
+        "non_grounding_model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 468
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 431
+              }
+            ]
+          }
+        ]
+      },
+      "created": "2026-10-04T02:25:40Z",
+      "updated": "2026-10-04T02:25:40Z",
+      "service_tier": "standard",
+      "steps": [
+        {
+          "signature": "[base64 elided: 1559880 chars, 1169910 bytes, sha256 746f59d06bc3c8b3…]",
+          "type": "thought"
+        },
+        {
+          "content": [
+            {
+              "data": "[base64 elided: 1133304 chars, 849976 bytes, sha256 886319c489a919c1…]",
+              "mime_type": "image/jpeg",
+              "type": "image"
+            }
+          ],
+          "type": "model_output"
+        }
+      ],
+      "object": "interaction",
+      "model": "gemini-3.1-flash-image"
+    }
+  },
+  "latency_ms": 9370,
+  "total_ms": 9373,
+  "attempts": [
+    {
+      "started_at": "2026-10-03T22:25:41-04:00",
+      "status": 200,
+      "latency_ms": 9370,
+      "retry_after": null
+    }
+  ],
+  "retry_decision": "no retry needed"
+}

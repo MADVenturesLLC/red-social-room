@@ -1,0 +1,19 @@
+[2026-10-03T22:11:51-04:00] preflight GET models/gemini-3.1-flash-image: status=400 latency=330ms
+[2026-10-03T22:11:51-04:00] Key/model preflight failed; per section 7 ('Key rejected') no paid call is sent. Stopping.
+[2026-10-03T22:11:51-04:00] done. stopped_early=preflight HTTP 400: "API_KEY_INVALID"; ledger: {"month":0.28,"spikeAllTime":0.28,"byProvider":{"xai":0.28}}
+[2026-10-03T22:25:32-04:00] preflight GET models/gemini-3.1-flash-image: status=200 latency=416ms
+[2026-10-03T22:25:32-04:00] reserved $0.075 for 01-generate-3x4 (month total incl. reservation $0.355, spike $0.355)
+[2026-10-03T22:25:41-04:00] 01-generate-3x4: outcome=ok status=200 latency=9370ms cost=$0.0685 [estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 26 tok x $0.50/M + text 429 + thought 0 tok x $3/M + image 1120 tok x $60/M; Gemini returns no billed-cost field] retry=no retry needed
+[2026-10-03T22:25:41-04:00] saved spike-results/gemini/01-generated.jpg 896x1200 0.7467 (~3:4)
+[2026-10-03T22:25:42-04:00] reserved $0.080 for 02-edit-background-red (month total incl. reservation $0.428, spike $0.428)
+[2026-10-03T22:25:51-04:00] 02-edit-background-red: outcome=ok status=200 latency=9664ms cost=$0.0686 [estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 1126 tok x $0.50/M + text 270 + thought 0 tok x $3/M + image 1120 tok x $60/M; Gemini returns no billed-cost field] retry=no retry needed
+[2026-10-03T22:25:51-04:00] saved spike-results/gemini/02-edited-background-red.jpg 896x1200 0.7467 (~3:4)
+[2026-10-03T22:25:51-04:00] reserved $0.080 for 03-edit-aspect-16x9 (month total incl. reservation $0.497, spike $0.497)
+[2026-10-03T22:26:02-04:00] 03-edit-aspect-16x9: outcome=ok status=200 latency=10773ms cost=$0.0691 [estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 1139 tok x $0.50/M + text 436 + thought 0 tok x $3/M + image 1120 tok x $60/M; Gemini returns no billed-cost field] retry=no retry needed
+[2026-10-03T22:26:02-04:00] saved spike-results/gemini/03-edited-aspect-16x9.jpg 1376x768 1.7917 (~16:9)
+[2026-10-03T22:26:02-04:00] reserved $0.075 for 04-generate-4x5 (month total incl. reservation $0.561, spike $0.561)
+[2026-10-03T22:26:12-04:00] 04-generate-4x5: outcome=ok status=200 latency=9903ms cost=$0.0685 [estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 26 tok x $0.50/M + text 434 + thought 0 tok x $3/M + image 1120 tok x $60/M; Gemini returns no billed-cost field] retry=no retry needed
+[2026-10-03T22:26:12-04:00] saved spike-results/gemini/04-generated-4x5.jpg 928x1152 0.8056 (~4:5)
+[2026-10-03T22:26:12-04:00] reserved $0.075 for 05-refusal-probe (month total incl. reservation $0.630, spike $0.630)
+[2026-10-03T22:26:13-04:00] 05-refusal-probe: outcome=ok status=200 latency=1461ms cost=$0.0001 [estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 40 tok x $0.50/M + text 18 + thought 0 tok x $3/M + image 0 tok x $60/M; Gemini returns no billed-cost field] retry=no retry needed
+[2026-10-03T22:26:13-04:00] done. stopped_early=no; ledger: {"month":0.55474,"spikeAllTime":0.55474,"byProvider":{"xai":0.28,"google":0.27474000000000004}}

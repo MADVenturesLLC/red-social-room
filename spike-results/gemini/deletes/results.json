@@ -1,0 +1,66 @@
+{
+  "docs": "https://ai.google.dev/api/interactions-api (deleteInteraction)",
+  "ran_at": "2026-10-04T02:33:54.575Z",
+  "results": [
+    {
+      "source_dump": "01-generate-3x4.json",
+      "interaction_id": "v1_ChZITG5CYXRpZE1wWExfUFVQOGNTN2NREhZITG5CYXRpZE1wWExfUFVQOGNTN2NR",
+      "delete_status": 200,
+      "delete_body": {},
+      "delete_latency_ms": 440,
+      "verify_get_status": 404,
+      "verify_get_error": {
+        "code": "not_found",
+        "message": "Requested entity was not found."
+      }
+    },
+    {
+      "source_dump": "02-edit-background-red.json",
+      "interaction_id": "v1_ChdKcm5CYW9MU0daaU1fUFVQenJhSnVBdxIXSnJuQmFvTFNHWmlNX1BVUHpyYUp1QXc",
+      "delete_status": 200,
+      "delete_body": {},
+      "delete_latency_ms": 186,
+      "verify_get_status": 404,
+      "verify_get_error": {
+        "code": "not_found",
+        "message": "Requested entity was not found."
+      }
+    },
+    {
+      "source_dump": "03-edit-aspect-16x9.json",
+      "interaction_id": "v1_ChdNTG5CYXJlbkNhU3JfdU1QanYyYWlRNBIXTUxuQmFyZW5DYVNyX3VNUGp2MmFpUTQ",
+      "delete_status": 200,
+      "delete_body": {},
+      "delete_latency_ms": 232,
+      "verify_get_status": 404,
+      "verify_get_error": {
+        "code": "not_found",
+        "message": "Requested entity was not found."
+      }
+    },
+    {
+      "source_dump": "04-generate-4x5.json",
+      "interaction_id": "v1_ChZPcm5CYXZIRUt0ZWlfdU1QbV9mSlFREhZPcm5CYXZIRUt0ZWlfdU1QbV9mSlFR",
+      "delete_status": 200,
+      "delete_body": {},
+      "delete_latency_ms": 295,
+      "verify_get_status": 404,
+      "verify_get_error": {
+        "code": "not_found",
+        "message": "Requested entity was not found."
+      }
+    },
+    {
+      "source_dump": "05-refusal-probe.json",
+      "interaction_id": "v1_ChdSTG5CYXN1UUlxMk5fUFVQb09fQnVROBIXUkxuQmFzdVFJcTJOX1BVUG9PX0J1UTg",
+      "delete_status": 200,
+      "delete_body": {},
+      "delete_latency_ms": 234,
+      "verify_get_status": 404,
+      "verify_get_error": {
+        "code": "not_found",
+        "message": "Requested entity was not found."
+      }
+    }
+  ]
+}

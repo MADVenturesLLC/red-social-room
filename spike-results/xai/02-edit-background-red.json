@@ -1,0 +1,77 @@
+{
+  "label": "02-edit-background-red",
+  "provider": "xai",
+  "model_requested": "grok-imagine-image-2.0",
+  "cost": {
+    "usd": 0.07,
+    "basis": "billed: usage.cost_in_usd_ticks=700000000 (https://docs.x.ai/developers/cost-tracking)",
+    "billed": true
+  },
+  "ledger_entry_id": "98fa8191-1976-413a-be5d-9eaa7e07d384",
+  "request": {
+    "method": "POST",
+    "url": "https://api.x.ai/v1/images/edits",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "[REDACTED]"
+    },
+    "body": {
+      "model": "grok-imagine-image-2.0",
+      "prompt": "Make the background red.",
+      "image": {
+        "type": "image_url",
+        "url": "[base64 elided data-URI image/jpeg: 419864 chars, 314898 bytes, sha256 0609ac3159504e45…]"
+      },
+      "n": 1,
+      "response_format": "b64_json"
+    }
+  },
+  "response": {
+    "outcome": "ok",
+    "status": 200,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "*",
+      "cf-cache-status": "DYNAMIC",
+      "cf-ray": "a450a5f4481d6e09-PDX",
+      "connection": "keep-alive",
+      "content-encoding": "gzip",
+      "content-type": "application/json",
+      "date": "Sun, 04 Oct 2026 02:10:13 GMT",
+      "server": "cloudflare",
+      "set-cookie": "[REDACTED]",
+      "strict-transport-security": "max-age=31536000",
+      "traceparent": "00-ae1e9aa538daafaff58cf87196844258-8cd1218c00009e72-01",
+      "transfer-encoding": "chunked",
+      "vary": "origin, access-control-request-method, access-control-request-headers",
+      "x-data-retention": "general",
+      "x-metrics-e2e-ms": "6909.9",
+      "x-ratelimit-limit-requests": "300",
+      "x-ratelimit-remaining-requests": "300",
+      "x-request-id": "7782620a-6fa2-914f-b026-1064fde878f6",
+      "x-zero-data-retention": "false"
+    },
+    "body": {
+      "data": [
+        {
+          "b64_json": "[base64 elided: 420932 chars, 315698 bytes, sha256 a82027d3698bb5fb…]",
+          "mime_type": "image/jpeg"
+        }
+      ],
+      "usage": {
+        "cost_in_usd_ticks": 700000000
+      }
+    }
+  },
+  "latency_ms": 7287,
+  "total_ms": 7288,
+  "attempts": [
+    {
+      "started_at": "2026-10-03T22:10:13-04:00",
+      "status": 200,
+      "latency_ms": 7287,
+      "retry_after": null
+    }
+  ],
+  "retry_decision": "no retry needed"
+}

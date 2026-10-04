@@ -1,0 +1,218 @@
+{
+  "provider": "xai",
+  "model_requested": "grok-imagine-image-2.0",
+  "started_at": "2026-10-04T02:09:54.639Z",
+  "steps": {
+    "01-generate-4x5": {
+      "refused_by_spend_guard": null,
+      "http_status": 422,
+      "outcome": "http_error",
+      "latency_ms": 127,
+      "total_ms": 128,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": null,
+      "cost_basis": "unresolved: HTTP 422 with no usage field; xAI may still charge for guideline violations (https://docs.x.ai/developers/pricing); reservation kept until console check",
+      "cost_billed": false,
+      "model_returned": null,
+      "response_top_level_keys": null,
+      "usage": null,
+      "images": [],
+      "error_body": "Failed to deserialize the JSON body into the target type: aspect_ratio: unknown variant `4:5`, expected one of `1:1`, `3:4`, `4:3`, `9:16`, `16:9`, `2:3`, `3:2`, `9:19.5`, `19.5:9`, `9:20`, `20:9`, `1:2`, `2:1`, `21:9`, `5:2`, `auto` at line 1 column 202",
+      "stop": false,
+      "stop_reason": null,
+      "requested_aspect_ratio": "4:5"
+    },
+    "01b-generate-3x4": {
+      "refused_by_spend_guard": null,
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 11445,
+      "total_ms": 11446,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": 0.04,
+      "cost_basis": "billed: usage.cost_in_usd_ticks=400000000 (https://docs.x.ai/developers/cost-tracking)",
+      "cost_billed": true,
+      "model_returned": null,
+      "response_top_level_keys": [
+        "data",
+        "usage"
+      ],
+      "usage": {
+        "cost_in_usd_ticks": 400000000
+      },
+      "images": [
+        {
+          "mime_type": "image/jpeg",
+          "revised_prompt": null,
+          "respect_moderation": null,
+          "has_b64": true,
+          "url_returned": false
+        }
+      ],
+      "error_body": null,
+      "stop": false,
+      "stop_reason": null,
+      "requested_aspect_ratio": "3:4",
+      "output": {
+        "file": "spike-results/xai/01-generated.jpg",
+        "format": "jpeg",
+        "height": 1152,
+        "width": 864,
+        "bytes": 314898,
+        "sha256": "0609ac3159504e45ba192d2fd2dbd72bb56823ac66cfeb7dd451d0be431a84ea",
+        "aspect": "0.7500 (~3:4)"
+      }
+    },
+    "02-edit-background-red": {
+      "refused_by_spend_guard": null,
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 7287,
+      "total_ms": 7288,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": 0.07,
+      "cost_basis": "billed: usage.cost_in_usd_ticks=700000000 (https://docs.x.ai/developers/cost-tracking)",
+      "cost_billed": true,
+      "model_returned": null,
+      "response_top_level_keys": [
+        "data",
+        "usage"
+      ],
+      "usage": {
+        "cost_in_usd_ticks": 700000000
+      },
+      "images": [
+        {
+          "mime_type": "image/jpeg",
+          "revised_prompt": null,
+          "respect_moderation": null,
+          "has_b64": true,
+          "url_returned": false
+        }
+      ],
+      "error_body": null,
+      "stop": false,
+      "stop_reason": null,
+      "requested_aspect_ratio": null,
+      "output": {
+        "file": "spike-results/xai/02-edited-background-red.jpg",
+        "format": "jpeg",
+        "height": 1152,
+        "width": 864,
+        "bytes": 315698,
+        "sha256": "a82027d3698bb5fb9325559ccde31d773c7591033f397fd43fe3260b631df439",
+        "aspect": "0.7500 (~3:4)"
+      }
+    },
+    "03-edit-aspect-16x9": {
+      "refused_by_spend_guard": null,
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 7506,
+      "total_ms": 7508,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": 0.07,
+      "cost_basis": "billed: usage.cost_in_usd_ticks=700000000 (https://docs.x.ai/developers/cost-tracking)",
+      "cost_billed": true,
+      "model_returned": null,
+      "response_top_level_keys": [
+        "data",
+        "usage"
+      ],
+      "usage": {
+        "cost_in_usd_ticks": 700000000
+      },
+      "images": [
+        {
+          "mime_type": "image/jpeg",
+          "revised_prompt": null,
+          "respect_moderation": null,
+          "has_b64": true,
+          "url_returned": false
+        }
+      ],
+      "error_body": null,
+      "stop": false,
+      "stop_reason": null,
+      "requested_aspect_ratio": "16:9",
+      "source_dimensions": "864x1152",
+      "output": {
+        "file": "spike-results/xai/03-edited-aspect-16x9.jpg",
+        "format": "jpeg",
+        "height": 720,
+        "width": 1280,
+        "bytes": 268308,
+        "sha256": "68b3e5c77c3d28f1e97761384b895bd7a8ddd1ff700b00f05ef3bf3c73dfced2",
+        "aspect": "1.7778 (~16:9)"
+      }
+    },
+    "04-refusal-probe": {
+      "refused_by_spend_guard": null,
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 10955,
+      "total_ms": 10956,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": 0.04,
+      "cost_basis": "billed: usage.cost_in_usd_ticks=400000000 (https://docs.x.ai/developers/cost-tracking)",
+      "cost_billed": true,
+      "model_returned": null,
+      "response_top_level_keys": [
+        "data",
+        "usage"
+      ],
+      "usage": {
+        "cost_in_usd_ticks": 400000000
+      },
+      "images": [
+        {
+          "mime_type": "image/jpeg",
+          "revised_prompt": null,
+          "respect_moderation": null,
+          "has_b64": true,
+          "url_returned": false
+        }
+      ],
+      "error_body": null,
+      "stop": false,
+      "stop_reason": null,
+      "refusal_probe": true,
+      "image_returned": true,
+      "image_saved": false,
+      "returned_image_info": {
+        "format": "jpeg",
+        "height": 1024,
+        "width": 1024,
+        "bytes": 321997,
+        "sha256": "7912cfc8bd7e6366a4e93b61345c28e4304ffde3f6e57a286146fef0f6d143cd"
+      }
+    }
+  },
+  "runs": [
+    {
+      "started_at": "2026-10-04T02:09:17Z",
+      "finished_at": "2026-10-04T02:09:17Z",
+      "stopped_early": "no generated image",
+      "note": "Backfilled 2026-10-04 from xai/run.log:1-4 (10:09:17 PM ET run). That run sent the 4:5 probe (HTTP 422, 127 ms, ledger row beb67d2b, $0.06 held unresolved) and stopped because the code then had no 3:4 fallback. Its own results.json had no runs[] field, so the 10:09:54 PM run's merge dropped it. Second-level times only (from run.log)."
+    },
+    {
+      "started_at": "2026-10-04T02:09:54.639Z",
+      "finished_at": "2026-10-04T02:10:31.889Z",
+      "stopped_early": null
+    }
+  ],
+  "finished_at": "2026-10-04T02:10:31.889Z",
+  "stopped_early": null,
+  "ledger_totals_after": {
+    "month": 0.28,
+    "spikeAllTime": 0.28,
+    "byProvider": {
+      "xai": 0.28
+    }
+  }
+}

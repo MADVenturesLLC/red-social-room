@@ -1,0 +1,42 @@
+{
+  "source_dump": "04-generate-4x5.json",
+  "interaction_id": "v1_ChZPcm5CYXZIRUt0ZWlfdU1QbV9mSlFREhZPcm5CYXZIRUt0ZWlfdU1QbV9mSlFR",
+  "request": {
+    "method": "DELETE",
+    "url": "https://generativelanguage.googleapis.com/v1beta/interactions/v1_ChZPcm5CYXZIRUt0ZWlfdU1QbV9mSlFREhZPcm5CYXZIRUt0ZWlfdU1QbV9mSlFR",
+    "headers": {
+      "Api-Revision": "2026-05-20",
+      "x-goog-api-key": "[REDACTED]"
+    },
+    "body": null
+  },
+  "response": {
+    "outcome": "ok",
+    "status": 200,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-type": "application/json",
+      "date": "Sun, 04 Oct 2026 02:33:53 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "server-timing": "gfet4t7; dur=172",
+      "transfer-encoding": "chunked",
+      "vary": "Origin, X-Origin, Referer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "SAMEORIGIN",
+      "x-xss-protection": "0"
+    },
+    "body": {}
+  },
+  "latency_ms": 295,
+  "total_ms": 296,
+  "attempts": [
+    {
+      "started_at": "2026-10-03T22:33:54-04:00",
+      "status": 200,
+      "latency_ms": 295,
+      "retry_after": null
+    }
+  ],
+  "retry_decision": "no retry needed"
+}

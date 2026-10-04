@@ -1,0 +1,547 @@
+{
+  "provider": "google",
+  "model_requested": "gemini-3.1-flash-image",
+  "started_at": "2026-10-04T02:25:32.176Z",
+  "steps": {
+    "00-preflight-model-get-bad-paste": {
+      "http_status": 400,
+      "outcome": "http_error",
+      "latency_ms": 330,
+      "body": {
+        "error": {
+          "code": 400,
+          "message": "API key not valid. Please pass a valid API key.",
+          "status": "INVALID_ARGUMENT",
+          "details": [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              "reason": "API_KEY_INVALID",
+              "domain": "googleapis.com",
+              "metadata": {
+                "service": "generativelanguage.googleapis.com"
+              }
+            },
+            {
+              "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+              "locale": "en-US",
+              "message": "API key not valid. Please pass a valid API key."
+            }
+          ]
+        }
+      },
+      "dump": "spike-results/gemini/00-preflight-model-get-2026-10-03T2211-bad-paste.json"
+    },
+    "00-preflight-model-get": {
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 416,
+      "body": {
+        "name": "models/gemini-3.1-flash-image",
+        "version": "3.0",
+        "displayName": "Nano Banana 2",
+        "description": "Gemini 3.1 Flash Image.",
+        "inputTokenLimit": 65536,
+        "outputTokenLimit": 65536,
+        "supportedGenerationMethods": [
+          "generateContent",
+          "countTokens",
+          "batchGenerateContent"
+        ],
+        "temperature": 1,
+        "topP": 0.95,
+        "topK": 64,
+        "maxTemperature": 1,
+        "thinking": true
+      }
+    },
+    "01-generate-3x4": {
+      "refused_by_spend_guard": null,
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 9370,
+      "total_ms": 9373,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": 0.0685,
+      "cost_basis": "estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 26 tok x $0.50/M + text 429 + thought 0 tok x $3/M + image 1120 tok x $60/M; Gemini returns no billed-cost field",
+      "cost_billed": false,
+      "model_returned": "gemini-3.1-flash-image",
+      "interaction_id": "v1_ChZITG5CYXRpZE1wWExfUFVQOGNTN2NREhZITG5CYXRpZE1wWExfUFVQOGNTN2NR",
+      "interaction_status": "completed",
+      "step_types": [
+        "thought",
+        "model_output"
+      ],
+      "output_text": [],
+      "usage": {
+        "total_tokens": 1575,
+        "total_input_tokens": 26,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 26
+          }
+        ],
+        "total_cached_tokens": 0,
+        "total_output_tokens": 1549,
+        "output_tokens_by_modality": [
+          {
+            "modality": "image",
+            "tokens": 1120
+          }
+        ],
+        "total_tool_use_tokens": 0,
+        "total_thought_tokens": 0,
+        "raw_prompt_token": 468,
+        "model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 468
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 431
+              }
+            ]
+          }
+        ],
+        "non_grounding_model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 468
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 431
+              }
+            ]
+          }
+        ]
+      },
+      "error_body": null,
+      "safety_like_fields": {
+        "$.status": "completed"
+      },
+      "stop": false,
+      "stop_reason": null,
+      "requested_aspect_ratio": "3:4",
+      "output": {
+        "file": "spike-results/gemini/01-generated.jpg",
+        "mime_type": "image/jpeg",
+        "format": "jpeg",
+        "height": 1200,
+        "width": 896,
+        "bytes": 849976,
+        "sha256": "886319c489a919c1e886f2848072e4a3e4a30acefed4b3b521ca97bb81a27f04",
+        "aspect": "0.7467 (~3:4)"
+      }
+    },
+    "02-edit-background-red": {
+      "refused_by_spend_guard": null,
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 9664,
+      "total_ms": 9667,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": 0.068573,
+      "cost_basis": "estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 1126 tok x $0.50/M + text 270 + thought 0 tok x $3/M + image 1120 tok x $60/M; Gemini returns no billed-cost field",
+      "cost_billed": false,
+      "model_returned": "gemini-3.1-flash-image",
+      "interaction_id": "v1_ChdKcm5CYW9MU0daaU1fUFVQenJhSnVBdxIXSnJuQmFvTFNHWmlNX1BVUHpyYUp1QXc",
+      "interaction_status": "completed",
+      "step_types": [
+        "thought",
+        "model_output"
+      ],
+      "output_text": [],
+      "usage": {
+        "total_tokens": 2516,
+        "total_input_tokens": 1126,
+        "input_tokens_by_modality": [
+          {
+            "modality": "image",
+            "tokens": 1120
+          },
+          {
+            "modality": "text",
+            "tokens": 6
+          }
+        ],
+        "total_cached_tokens": 0,
+        "total_output_tokens": 1390,
+        "output_tokens_by_modality": [
+          {
+            "modality": "image",
+            "tokens": 1120
+          }
+        ],
+        "total_tool_use_tokens": 0,
+        "total_thought_tokens": 0,
+        "raw_prompt_token": 1579,
+        "model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 459
+              },
+              {
+                "modality": "image",
+                "tokens": 1120
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 272
+              }
+            ]
+          }
+        ],
+        "non_grounding_model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 459
+              },
+              {
+                "modality": "image",
+                "tokens": 1120
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 272
+              }
+            ]
+          }
+        ]
+      },
+      "error_body": null,
+      "safety_like_fields": {
+        "$.status": "completed"
+      },
+      "stop": false,
+      "stop_reason": null,
+      "requested_aspect_ratio": null,
+      "source_dimensions": "896x1200",
+      "output": {
+        "file": "spike-results/gemini/02-edited-background-red.jpg",
+        "mime_type": "image/jpeg",
+        "format": "jpeg",
+        "height": 1200,
+        "width": 896,
+        "bytes": 708687,
+        "sha256": "092adc716ea48c5399366e90a2e1da19463e52e106a45a7a4d9403e6bcde7e07",
+        "aspect": "0.7467 (~3:4)"
+      }
+    },
+    "03-edit-aspect-16x9": {
+      "refused_by_spend_guard": null,
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 10773,
+      "total_ms": 10776,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": 0.0690775,
+      "cost_basis": "estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 1139 tok x $0.50/M + text 436 + thought 0 tok x $3/M + image 1120 tok x $60/M; Gemini returns no billed-cost field",
+      "cost_billed": false,
+      "model_returned": "gemini-3.1-flash-image",
+      "interaction_id": "v1_ChdNTG5CYXJlbkNhU3JfdU1QanYyYWlRNBIXTUxuQmFyZW5DYVNyX3VNUGp2MmFpUTQ",
+      "interaction_status": "completed",
+      "step_types": [
+        "model_output",
+        "thought",
+        "model_output"
+      ],
+      "output_text": [
+        "I have extended the scene into a 16:9 frame, adding more of the surrounding room and garden details while keeping the cat and succulent exactly as they were."
+      ],
+      "usage": {
+        "total_tokens": 2695,
+        "total_input_tokens": 1139,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 19
+          },
+          {
+            "modality": "image",
+            "tokens": 1120
+          }
+        ],
+        "total_cached_tokens": 0,
+        "total_output_tokens": 1556,
+        "output_tokens_by_modality": [
+          {
+            "modality": "image",
+            "tokens": 1120
+          }
+        ],
+        "total_tool_use_tokens": 0,
+        "total_thought_tokens": 0,
+        "raw_prompt_token": 1592,
+        "model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 472
+              },
+              {
+                "modality": "image",
+                "tokens": 1120
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 438
+              }
+            ]
+          }
+        ],
+        "non_grounding_model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 472
+              },
+              {
+                "modality": "image",
+                "tokens": 1120
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 438
+              }
+            ]
+          }
+        ]
+      },
+      "error_body": null,
+      "safety_like_fields": {
+        "$.status": "completed"
+      },
+      "stop": false,
+      "stop_reason": null,
+      "requested_aspect_ratio": "16:9",
+      "source_dimensions": "896x1200",
+      "output": {
+        "file": "spike-results/gemini/03-edited-aspect-16x9.jpg",
+        "mime_type": "image/jpeg",
+        "format": "jpeg",
+        "height": 768,
+        "width": 1376,
+        "bytes": 733087,
+        "sha256": "05f86950432d19fdf84811a6e6168834bd58e872763543d0d3132d455184a100",
+        "aspect": "1.7917 (~16:9)"
+      }
+    },
+    "04-generate-4x5": {
+      "refused_by_spend_guard": null,
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 9903,
+      "total_ms": 9907,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": 0.068515,
+      "cost_basis": "estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 26 tok x $0.50/M + text 434 + thought 0 tok x $3/M + image 1120 tok x $60/M; Gemini returns no billed-cost field",
+      "cost_billed": false,
+      "model_returned": "gemini-3.1-flash-image",
+      "interaction_id": "v1_ChZPcm5CYXZIRUt0ZWlfdU1QbV9mSlFREhZPcm5CYXZIRUt0ZWlfdU1QbV9mSlFR",
+      "interaction_status": "completed",
+      "step_types": [
+        "thought",
+        "model_output"
+      ],
+      "output_text": [],
+      "usage": {
+        "total_tokens": 1580,
+        "total_input_tokens": 26,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 26
+          }
+        ],
+        "total_cached_tokens": 0,
+        "total_output_tokens": 1554,
+        "output_tokens_by_modality": [
+          {
+            "modality": "image",
+            "tokens": 1120
+          }
+        ],
+        "total_tool_use_tokens": 0,
+        "total_thought_tokens": 0,
+        "raw_prompt_token": 468,
+        "model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 468
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 436
+              }
+            ]
+          }
+        ],
+        "non_grounding_model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 468
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 436
+              }
+            ]
+          }
+        ]
+      },
+      "error_body": null,
+      "safety_like_fields": {
+        "$.status": "completed"
+      },
+      "stop": false,
+      "stop_reason": null,
+      "requested_aspect_ratio": "4:5",
+      "output": {
+        "file": "spike-results/gemini/04-generated-4x5.jpg",
+        "mime_type": "image/jpeg",
+        "format": "jpeg",
+        "height": 1152,
+        "width": 928,
+        "bytes": 825086,
+        "sha256": "4dd0290c67cd7ac501cbd3c6c72d29e8f66c4030859a47e811b95f5be73ed728",
+        "aspect": "0.8056 (~4:5)"
+      }
+    },
+    "05-refusal-probe": {
+      "refused_by_spend_guard": null,
+      "http_status": 200,
+      "outcome": "ok",
+      "latency_ms": 1461,
+      "total_ms": 1462,
+      "attempts": 1,
+      "retry_decision": "no retry needed",
+      "cost_usd": 0.000074,
+      "cost_basis": "estimated from API usage tokens x published rates (https://ai.google.dev/gemini-api/docs/pricing): input 40 tok x $0.50/M + text 18 + thought 0 tok x $3/M + image 0 tok x $60/M; Gemini returns no billed-cost field",
+      "cost_billed": false,
+      "model_returned": "gemini-3.1-flash-image",
+      "interaction_id": "v1_ChdSTG5CYXN1UUlxMk5fUFVQb09fQnVROBIXUkxuQmFzdVFJcTJOX1BVUG9PX0J1UTg",
+      "interaction_status": "completed",
+      "step_types": [
+        "model_output"
+      ],
+      "output_text": [
+        "I can't generate an image of Tom Hanks in handcuffs being arrested by FBI agents."
+      ],
+      "usage": {
+        "total_tokens": 58,
+        "total_input_tokens": 40,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 40
+          }
+        ],
+        "total_cached_tokens": 0,
+        "total_output_tokens": 18,
+        "total_tool_use_tokens": 0,
+        "total_thought_tokens": 0,
+        "raw_prompt_token": 482,
+        "model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 482
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 18
+              }
+            ]
+          }
+        ],
+        "non_grounding_model_invocation_token_counts": [
+          {
+            "prompt_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 482
+              }
+            ],
+            "candidates_tokens_details": [
+              {
+                "modality": "text",
+                "tokens": 18
+              }
+            ]
+          }
+        ]
+      },
+      "error_body": null,
+      "safety_like_fields": {
+        "$.status": "completed"
+      },
+      "stop": false,
+      "stop_reason": null,
+      "refusal_probe": true,
+      "image_returned": false,
+      "image_saved": false,
+      "returned_image_info": null
+    }
+  },
+  "runs": [
+    {
+      "started_at": "2026-10-04T02:11:51.586Z",
+      "finished_at": "2026-10-04T02:11:51.933Z",
+      "stopped_early": "preflight HTTP 400: \"API_KEY_INVALID\""
+    },
+    {
+      "started_at": "2026-10-04T02:25:32.176Z",
+      "finished_at": "2026-10-04T02:26:13.858Z",
+      "stopped_early": null
+    }
+  ],
+  "finished_at": "2026-10-04T02:26:13.858Z",
+  "stopped_early": null,
+  "ledger_totals_after": {
+    "month": 0.55474,
+    "spikeAllTime": 0.55474,
+    "byProvider": {
+      "xai": 0.28,
+      "google": 0.27474000000000004
+    }
+  }
+}

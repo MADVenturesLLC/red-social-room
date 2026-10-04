@@ -1,0 +1,8 @@
+[2026-10-03T22:06:35-04:00] xai-image-generation-models: outcome=ok status=200 latency=216ms
+[2026-10-03T22:06:35-04:00]   models: grok-imagine-image (aliases: grok-imagine-image-2026-03-02); grok-imagine-image-2.0; grok-imagine-image-quality (aliases: grok-imagine-image-quality-20260403,grok-imagine-image-quality-latest,grok-imagine-image-pro)
+[2026-10-03T22:06:35-04:00] gemini-model-gemini-3.1-flash-image: outcome=http_error status=400 latency=287ms
+[2026-10-03T22:06:35-04:00]   {"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID","domain":"googleapis.com","metadata":{"service":"generativelanguage.googleapis.com"}},{"@type":"type.googleapis.com/google.rpc.LocalizedMessage","locale":"en-US","message":"API key not valid. Please pass a valid API key."}]}}
+[2026-10-03T22:24:49-04:00] xai-image-generation-models: outcome=ok status=200 latency=181ms
+[2026-10-03T22:24:49-04:00]   models: grok-imagine-image (aliases: grok-imagine-image-2026-03-02); grok-imagine-image-2.0; grok-imagine-image-quality (aliases: grok-imagine-image-quality-20260403,grok-imagine-image-quality-latest,grok-imagine-image-pro)
+[2026-10-03T22:24:50-04:00] gemini-model-gemini-3.1-flash-image: outcome=ok status=200 latency=355ms
+[2026-10-03T22:24:50-04:00]   {"name":"models/gemini-3.1-flash-image","version":"3.0","displayName":"Nano Banana 2","supportedGenerationMethods":["generateContent","countTokens","batchGenerateContent"]}

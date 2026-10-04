@@ -1,0 +1,5 @@
+[2026-10-03T22:33:53-04:00] 01-generate-3x4.json: DELETE 200 (440 ms, body non-empty); verify GET 404 undefined
+[2026-10-03T22:33:53-04:00] 02-edit-background-red.json: DELETE 200 (186 ms, body non-empty); verify GET 404 undefined
+[2026-10-03T22:33:53-04:00] 03-edit-aspect-16x9.json: DELETE 200 (232 ms, body non-empty); verify GET 404 undefined
+[2026-10-03T22:33:54-04:00] 04-generate-4x5.json: DELETE 200 (295 ms, body non-empty); verify GET 404 undefined
+[2026-10-03T22:33:54-04:00] 05-refusal-probe.json: DELETE 200 (234 ms, body non-empty); verify GET 404 undefined

@@ -1,0 +1,58 @@
+{
+  "label": "00-preflight-model-get",
+  "billed": false,
+  "request": {
+    "method": "GET",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image",
+    "headers": {
+      "x-goog-api-key": "[REDACTED]"
+    },
+    "body": null
+  },
+  "response": {
+    "outcome": "ok",
+    "status": 200,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-type": "application/json; charset=UTF-8",
+      "date": "Sun, 04 Oct 2026 02:25:32 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "server-timing": "gfet4t7; dur=84",
+      "transfer-encoding": "chunked",
+      "vary": "Origin, X-Origin, Referer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "SAMEORIGIN",
+      "x-xss-protection": "0"
+    },
+    "body": {
+      "name": "models/gemini-3.1-flash-image",
+      "version": "3.0",
+      "displayName": "Nano Banana 2",
+      "description": "Gemini 3.1 Flash Image.",
+      "inputTokenLimit": 65536,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "batchGenerateContent"
+      ],
+      "temperature": 1,
+      "topP": 0.95,
+      "topK": 64,
+      "maxTemperature": 1,
+      "thinking": true
+    }
+  },
+  "latency_ms": 416,
+  "total_ms": 429,
+  "attempts": [
+    {
+      "started_at": "2026-10-03T22:25:32-04:00",
+      "status": 200,
+      "latency_ms": 416,
+      "retry_after": null
+    }
+  ],
+  "retry_decision": "no retry needed"
+}
