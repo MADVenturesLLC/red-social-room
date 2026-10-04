@@ -1,4 +1,4 @@
-// Behaviour tests for the paid scripts with a FAKE transport (Argus N2, N3, N9, N10, N13, P2, P6, Q1, Q2, Q5).
+// Behaviour tests for the paid scripts with a FAKE transport (Argus N2, N3, N9, N10, N13, P2, P6, Q1, Q2, Q5, R4).
 // Each test copies spike/ into a temp dir and runs the copy as a child process with:
 //   - `--import fixtures/fetch-stub.mjs` (fetch replaced; every request recorded, nothing leaves the box)
 //   - dummy key values only (the real XAI_API_KEY / GEMINI_API_KEY are never passed to the child)
@@ -243,6 +243,18 @@ test("Q2 Gemini: steps:[null] -> no throw; dump written; F15 settles from the im
   const res = JSON.parse(readFileSync(join(OUT, "results.json"), "utf8"));
   assert.equal(res.steps["01-generate-3x4"].ledger_status, "settled");
   assert.deepEqual(res.steps["01-generate-3x4"].step_types, [null]);
+  assert.equal(res.stopped_early, "no generated image");
+}));
+
+// ---- Argus R4 end to end: an error body with no steps array records step_types [] (not null) ----
+test("R4 Gemini: HTTP 400 error body (no steps) -> results.json step_types is [] (not null)", withSandbox((dir) => {
+  const r = run(dir, "gemini.ts", { STUB_GEMINI_SHAPE: "error400" });
+  assert.equal(r.status, 0, r.out);
+  assert.equal(r.posts.length, 1);
+  const res = JSON.parse(readFileSync(join(dir, "spike-results", "gemini", "results.json"), "utf8"));
+  const st = res.steps["01-generate-3x4"];
+  assert.equal(st.http_status, 400);
+  assert.deepEqual(st.step_types, []);
   assert.equal(res.stopped_early, "no generated image");
 }));
 

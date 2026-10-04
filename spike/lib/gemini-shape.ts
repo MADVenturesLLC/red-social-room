@@ -2,7 +2,7 @@
 // without running gemini.ts.
 import type { CallResult } from "./http.ts";
 import type { StepCost } from "./step.ts";
-import { SOURCES, GEMINI, geminiCostFromUsage } from "./prices.ts";
+import { SOURCES, GEMINI, geminiCostFromUsage, normModality } from "./prices.ts";
 
 export interface Block { type?: string; text?: string; data?: string; mime_type?: string }
 export interface Step { type?: string; content?: Block[]; summary?: Block[] }
@@ -13,8 +13,8 @@ export interface Interaction { id?: string; model?: string; status?: string; ste
  * - 4xx (not 429) with no usage block: $0 (rejected; Google bills on tokens and reported none).
  * - Any other non-ok outcome (4xx WITH usage, 429, 5xx, timeout, connection error): UNRESOLVED.
  * - 200 with an image: priced from usage tokens, image-rate tokens required (Argus N13).
- * - 200 with no image (TECH-PLAN-v1-AMENDMENT-1.md row F9, :190): priced at the token estimate ONLY when
- *   isF9TextOnly() passes. Any other no-image 200 is row F15 (:196): settle from image-rate usage if it is
+ * - 200 with no image (TECH-PLAN-v1-AMENDMENT-1.md row F9, :192): priced at the token estimate ONLY when
+ *   isF9TextOnly() passes. Any other no-image 200 is row F15 (:198): settle from image-rate usage if it is
  *   present, otherwise UNRESOLVED; never priced at the $3/M text rate (Argus P2, Q1).
  * - A missing or incomplete usage block is always UNRESOLVED.
  */
@@ -33,19 +33,19 @@ export function geminiCost(r: CallResult, _estimate: number): StepCost {
 }
 
 /**
- * Amendment 1 row F9 (:190) text-only test. ALL must hold:
+ * Amendment 1 row F9 (:192) text-only test. ALL must hold:
  * (1) every step is "thought" or "model_output"; (2) every block is {type:"text", text} with at least one
  * model_output text block (both in isTextOnlyAnswer); (3) no output_tokens_by_modality entry is an image,
- * compared case-insensitively; (4) total_output_tokens is a count < 1120 (one 1K image).
+ * compared after trim + lower case; (4) total_output_tokens is a count < 1120 (one 1K image).
  */
 export function isF9TextOnly(j: Interaction | null): boolean {
   return isTextOnlyAnswer(j) && !hasImageModality(j) && belowOneImage(j);
 }
 
-/** Any output_tokens_by_modality entry whose modality is "image" in any letter case (F9 condition 3). */
+/** Any output_tokens_by_modality entry whose modality is "image" in any letter case, spaces trimmed (F9 condition 3, Argus R2). */
 function hasImageModality(j: Interaction | null): boolean {
   const mods = (isObj(j) && isObj(j.usage) ? j.usage.output_tokens_by_modality : undefined) as unknown;
-  return Array.isArray(mods) && mods.some((m) => isObj(m) && typeof m.modality === "string" && m.modality.toLowerCase() === "image");
+  return Array.isArray(mods) && mods.some((m) => isObj(m) && typeof m.modality === "string" && normModality(m.modality) === "image");
 }
 
 /** total_output_tokens is a count below one 1K image's 1120 tokens (F9 condition 4, Argus Q1). */
@@ -76,10 +76,10 @@ export function outputImages(j: Interaction | null): Block[] {
 export function outputText(j: Interaction | null): string[] {
   return outputBlocks(j).filter((b) => b.type === "text" && typeof b.text === "string" && b.text.length > 0).map((b) => b.text as string);
 }
-/** Step types for results.json, null for a step that is not an object (Argus Q2). */
-export function stepTypes(j: Interaction | null): Array<string | null> | null {
+/** Step types for results.json, null for a step that is not an object (Argus Q2); [] when there is no steps array (R4). */
+export function stepTypes(j: Interaction | null): Array<string | null> {
   const steps = isObj(j) ? j.steps : undefined;
-  return Array.isArray(steps) ? steps.map((s) => (isObj(s) && typeof s.type === "string" ? s.type : null)) : null;
+  return Array.isArray(steps) ? steps.map((s) => (isObj(s) && typeof s.type === "string" ? s.type : null)) : [];
 }
 
 /**

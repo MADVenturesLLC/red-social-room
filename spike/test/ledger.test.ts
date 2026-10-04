@@ -192,6 +192,7 @@ const BAD: Array<[string, unknown, RegExp]> = [
   ["id missing", goodRow({ id: undefined }), /id must be/],
   ["created_at missing (Q4)", goodRow({ created_at: undefined }), /created_at must be a string/],
   ["created_at not a string (Q4)", goodRow({ created_at: 20261004 }), /created_at must be a string/],
+  ["created_at empty string (R3/C13)", goodRow({ created_at: "" }), /created_at must be a string/],
   ["prior_status unknown (Q4)", goodRow({ prior_status: "paid" }), /prior_status is not a known status/],
 ];
 for (const [name, row, why] of BAD) {
@@ -307,5 +308,17 @@ test("P7: .gitignore covers credential JSON names and keeps the tracked JSON fil
     const ignored = (f: string) => spawnSync("git", ["-C", d, "check-ignore", "-q", "--no-index", f]).status === 0;
     for (const f of ["service-account.json", "prod-service-account.json", "my_service_account.json", "client_secret_123.apps.googleusercontent.com.json", "gcp-key.json", "api_key.json", "credentials.json", "application_default_credentials.json", "keys/x.p12", ".env", ".npmrc", "id_rsa", "spike-results/ledger.lock", "cert.pfx", "id_ecdsa", "id_ecdsa.pub", "key.json", "token.json", "sub/token.json"]) assert.ok(ignored(f), `${f} should be ignored`);
     for (const f of ["package.json", "package-lock.json", "tsconfig.json", "spike-results/ledger.json", "spike-results/xai/results.json", "spike-results/gemini/05-refusal-probe.json"]) assert.ok(!ignored(f), `${f} must stay trackable`);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+// ---- Argus R3 (C14): key.json / token.json are ignored in any folder, not only at the root ----
+test("R3/C14: .gitignore ignores key.json inside subfolders (git check-ignore)", () => {
+  const d = mkdtempSync(join(tmpdir(), "rsr-ignore-"));
+  try {
+    assert.equal(spawnSync("git", ["init", "-q", d]).status, 0);
+    copyFileSync(join(ROOT, ".gitignore"), join(d, ".gitignore"));
+    const ignored = (f: string) => spawnSync("git", ["-C", d, "check-ignore", "-q", "--no-index", f]).status === 0;
+    for (const f of ["key.json", "sub/key.json", "spike/secrets/key.json", "sub/token.json"]) assert.ok(ignored(f), `${f} should be ignored`);
+    assert.ok(!ignored("sub/monkey.json"), "a name that only ends in key.json stays trackable");
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

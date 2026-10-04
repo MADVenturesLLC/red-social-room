@@ -12,6 +12,7 @@
 //              STUB_GEMINI_SHAPE=hole   the image sits in an extra step key next to a text block, with no
 //                                       modality list and 1549 output tokens (Argus Q1, his "gem-hole")
 //              STUB_GEMINI_SHAPE=nullstep  steps: [null] (a 200 that breaks the schema; Argus Q2)
+//              STUB_GEMINI_SHAPE=error400  HTTP 400 error body: no steps, no usage (Argus R4)
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 
 const LOG = process.env.STUB_LOG;
@@ -49,6 +50,7 @@ globalThis.fetch = async (url, init = {}) => {
       : { total_input_tokens: 26, total_output_tokens: 1549, total_thought_tokens: 0, output_tokens_by_modality: [{ modality: "image", tokens: 1120 }] };
     const shape = process.env.STUB_GEMINI_SHAPE;
     if (shape === "hole" && !refusal) return json(200, { id: "v1_stub", status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: "Here is your image" }], images: [{ data: PNG, mime_type: "image/png" }] }], usage: { total_input_tokens: 26, total_output_tokens: 1549, total_thought_tokens: 0 } });
+    if (shape === "error400" && !refusal) return json(400, { error: { code: 400, message: "Invalid value at 'response_format' (stub)", status: "INVALID_ARGUMENT" } });
     if (shape === "nullstep" && !refusal) return json(200, { id: "v1_stub", status: "completed", steps: [null], usage: { total_input_tokens: 26, total_output_tokens: 1549, total_thought_tokens: 0, output_tokens_by_modality: [{ modality: "image", tokens: 1120 }] } });
     const v2 = shape === "v2";
     if (v2 && !refusal) delete usage.output_tokens_by_modality;

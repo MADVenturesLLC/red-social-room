@@ -74,3 +74,13 @@ test("Q2: costOf throws -> response still dumped, row held UNRESOLVED (not settl
   assert.equal(recorded.length, 1);
   assert.ok(logs.some((m) => m.startsWith("COST RULE FAILED for 01-generate-3x4")));
 }));
+
+// ---- Argus R3 (C8): the catch path records billed:false (in the outcome and in the dump), never a billed figure ----
+test("R3/C8: costOf throws -> cost.billed is false in the outcome and in the dump", () => inDir(async (dir, l) => {
+  const o = await runPaidStep({ ledger: l, provider: "google", model: "m", label: "01-generate-3x4", outDir: dir, estimateUsd: 0.075, estimateBasis: "t", spec, log: () => {},
+    costOf: () => { throw new Error("boom"); }, doCall: async () => fakeOk({ id: "v1_x" }) });
+  assert.equal(o.cost?.billed, false);
+  const dump = JSON.parse(readFileSync(join(dir, "01-generate-3x4.json"), "utf8"));
+  assert.equal(dump.cost.billed, false);
+  assert.equal(dump.cost.usd, null);
+}));

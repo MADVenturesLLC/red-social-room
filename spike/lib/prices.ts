@@ -45,7 +45,7 @@ const isCount = (v: unknown): v is number => typeof v === "number" && Number.isI
  * settling a billed call at ~$0. Required: total_input_tokens and total_output_tokens as integers > 0;
  * total_thought_tokens, if present, an integer >= 0; and, when `imageTokensRequired` (an image came back,
  * or the reply fails the Amendment 1 F9 text-only test; see gemini-shape.ts isF9TextOnly, Argus P2/Q1), an
- * output_tokens_by_modality entry for "image" (matched case-insensitively, Argus Q1) with tokens > 0
+ * output_tokens_by_modality entry for "image" (normModality: trimmed, any case; Argus Q1, R2) with tokens > 0
  * (otherwise $60/M image tokens would be priced at the $3/M text rate).
  */
 export function geminiCostFromUsage(u: unknown, opts: { imageTokensRequired: boolean }): { usd: number; detail: string } | { error: string } {
@@ -57,7 +57,7 @@ export function geminiCostFromUsage(u: unknown, opts: { imageTokensRequired: boo
   if (g.total_thought_tokens !== undefined && !isCount(g.total_thought_tokens)) missing.push("total_thought_tokens (not a count)");
   const mods = g.output_tokens_by_modality;
   if (mods !== undefined && (!Array.isArray(mods) || mods.some((m) => !m || typeof m.modality !== "string" || !isCount(m.tokens)))) missing.push("output_tokens_by_modality (malformed)");
-  const imgOut = Array.isArray(mods) ? mods.filter((m) => typeof m?.modality === "string" && m.modality.toLowerCase() === "image" && isCount(m.tokens)).reduce((a, m) => a + (m.tokens as number), 0) : 0;
+  const imgOut = Array.isArray(mods) ? mods.filter((m) => typeof m?.modality === "string" && normModality(m.modality) === "image" && isCount(m.tokens)).reduce((a, m) => a + (m.tokens as number), 0) : 0;
   if (opts.imageTokensRequired && imgOut === 0) missing.push("output_tokens_by_modality[image]");
   if (missing.length) return { error: `usage block missing/invalid: ${missing.join(", ")}` };
   const input = g.total_input_tokens as number;
@@ -67,4 +67,9 @@ export function geminiCostFromUsage(u: unknown, opts: { imageTokensRequired: boo
   const textOut = out - imgOut;
   const usd = (input * GEMINI.inputPerMTok + (textOut + thought) * GEMINI.textThinkingOutputPerMTok + imgOut * GEMINI.imageOutputPerMTok) / 1e6;
   return { usd, detail: `input ${input} tok x $0.50/M + text ${textOut} + thought ${thought} tok x $3/M + image ${imgOut} tok x $60/M` };
+}
+
+/** A modality name as compared everywhere: surrounding whitespace dropped, lower case (" IMAGE " -> "image"; Argus Q1, R2). */
+export function normModality(m: string): string {
+  return m.trim().toLowerCase();
 }

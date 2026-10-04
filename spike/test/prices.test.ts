@@ -1,7 +1,7 @@
 // Cost rules (Argus N13, P1, P2): an unknown cost is held UNRESOLVED (usd null), never settled at $0.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { geminiCostFromUsage } from "../lib/prices.ts";
+import { geminiCostFromUsage, normModality } from "../lib/prices.ts";
 import { geminiCost, isTextOnlyAnswer, isF9TextOnly, outputImages, outputText, stepTypes } from "../lib/gemini-shape.ts";
 import { xaiCost } from "../lib/xai-shape.ts";
 import type { CallResult } from "../lib/http.ts";
@@ -99,7 +99,7 @@ test("P2: no image parsed + no per-modality list -> unresolved unless the answer
   assert.equal(Math.round((geminiCost(resp(200, refusal), 0.075).usd as number) * 1e6), 74);
 });
 
-// ---- Argus Q1 / Amendment 1 row F9 (:190) and F15 (:196) ----
+// ---- Argus Q1 / Amendment 1 row F9 (:192) and F15 (:198) ----
 // A no-image 200 is priced at the token estimate only when ALL four F9 conditions hold; otherwise F15.
 const TEXT_REPLY = { status: "completed", steps: [{ type: "thought", content: [] }, { type: "model_output", content: [{ type: "text", text: "I can't" }] }] };
 const textUsage = (out: number, mods?: unknown) => ({ total_input_tokens: 40, total_output_tokens: out, total_thought_tokens: 0, ...(mods ? { output_tokens_by_modality: mods } : {}) });
@@ -178,7 +178,42 @@ test("Q2: null steps/blocks and non-array steps/content are tolerated by every h
   }
   assert.deepEqual(outputText({ steps: [{ type: "model_output", content: [null, { type: "text", text: "hi" }] }] } as never), ["hi"]);
   assert.deepEqual(stepTypes({ steps: [null, { type: "thought" }] } as never), [null, "thought"]);
-  assert.equal(stepTypes({ steps: "x" } as never), null);
+  assert.deepEqual(stepTypes({ steps: "x" } as never), []);
+});
+
+// ---- Argus R2: modality names are trimmed and lower-cased before matching (gemini-shape.ts:48, prices.ts:60) ----
+test("R2: modality names are normalised with trim + lower case (' IMAGE ' is image, 'Text' is text) in F9 condition 3 and in the image-token count", () => {
+  assert.equal(normModality(" IMAGE "), "image");
+  assert.equal(normModality("\tImage\n"), "image");
+  assert.equal(normModality("Text"), "text");
+  // gemini-shape.ts:48: a padded " IMAGE " entry fails F9 condition 3 -> F15 settles at the image rate (not $0.00302 text rate)
+  const padded = { ...TEXT_REPLY, usage: textUsage(1000, [{ modality: " IMAGE ", tokens: 900 }, { modality: "Text", tokens: 100 }]) };
+  assert.equal(isF9TextOnly(padded as never), false);
+  const c = geminiCost(resp(200, padded), 0.075);
+  assert.equal(Math.round((c.usd as number) * 1e6), 54320); // 40 x $0.5/M + 100 x $3/M + 900 x $60/M
+  assert.match(c.basis, /F15/);
+  // prices.ts:60: " IMAGE " tokens are counted as image tokens (an image came back: $0.0685, not unresolved)
+  const u = geminiCostFromUsage({ ...OK_USAGE, output_tokens_by_modality: [{ modality: " IMAGE ", tokens: 1120 }, { modality: "Text", tokens: 429 }] }, { imageTokensRequired: true });
+  assert.ok(!("error" in u), JSON.stringify(u));
+  assert.equal(Math.round(u.usd * 1e6), 68500);
+  // a "Text" / " text " entry is text, not image: F9 passes and the refusal is priced at the text rate
+  for (const name of ["Text", " text "]) {
+    const t = { ...TEXT_REPLY, usage: textUsage(18, [{ modality: name, tokens: 18 }]) };
+    assert.equal(isF9TextOnly(t as never), true, name);
+    assert.equal(Math.round((geminiCost(resp(200, t), 0.075).usd as number) * 1e6), 74, name);
+  }
+});
+
+// ---- Argus R4: results.json step_types is [] (not null) for a body with no steps array ----
+test("R4: stepTypes returns [] (not null) when there is no steps array (error bodies, schema breaks)", () => {
+  for (const [name, j] of [
+    ["error body", { error: { code: 400, message: "bad" } }],
+    ["null body", null],
+    ["steps not an array", { steps: "x" }],
+    ["body is a number", 5],
+  ] as Array<[string, unknown]>) assert.deepEqual(stepTypes(j as never), [], name);
+  assert.deepEqual(stepTypes({ steps: [] } as never), []);
+  assert.deepEqual(stepTypes({ steps: [{ type: "model_output" }] } as never), ["model_output"]);
 });
 
 // ---- Argus Q3: the xAI $0 rule needs a NON-JSON 422 body that STARTS with the deserialize phrase ----
@@ -190,4 +225,12 @@ test("Q3 xAI: a 422 JSON body, or the phrase mid-string, is held unresolved", ()
   // r.json === null is required too (defence in depth: today a body starting with "F" never parses as JSON)
   NO_COST(xaiCost(resp(422, "Failed to deserialize the JSON body into the target type", { json: { error: "x" } }), 0.06), "parsed JSON body");
   assert.equal(xaiCost(resp(422, "Failed to deserialize the JSON body into the target type: aspect_ratio: unknown variant `4:5`"), 0.06).usd, 0);
+});
+
+// ---- Argus R3 (C11): only the full observed phrase earns $0; a shortened "Failed to deserialize" prefix is held ----
+test("R3/C11 xAI: a 422 text starting 'Failed to deserialize' but not '... the JSON body' is held unresolved; the full phrase is still $0", () => {
+  NO_COST(xaiCost(resp(422, "Failed to deserialize request: prompt flagged"), 0.06), "shortened phrase");
+  NO_COST(xaiCost(resp(422, "Failed to deserialize"), 0.06), "the bare shortened phrase");
+  const full = xaiCost(resp(422, "Failed to deserialize the JSON body into the target type: aspect_ratio: unknown variant `4:5`"), 0.06);
+  assert.equal(full.usd, 0); assert.match(full.basis, /deserialization/);
 });
