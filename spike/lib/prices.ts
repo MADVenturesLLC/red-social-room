@@ -42,11 +42,12 @@ const isCount = (v: unknown): v is number => typeof v === "number" && Number.isI
  * Fails CLOSED (Argus N13): returns { error } instead of a number when the usage block is missing or lacks
  * the token fields the price depends on, so the caller keeps the reservation (unresolved) instead of
  * settling a billed call at ~$0. Required: total_input_tokens and total_output_tokens as integers > 0;
- * total_thought_tokens, if present, an integer >= 0; and, when the response carried an image, an
+ * total_thought_tokens, if present, an integer >= 0; and, when `imageTokensRequired` (an image came back,
+ * or the response is not a recognised text-only answer; see gemini-shape.ts, Argus P2), an
  * output_tokens_by_modality entry for "image" with tokens > 0 (otherwise $60/M image tokens would be
  * priced at the $3/M text rate).
  */
-export function geminiCostFromUsage(u: unknown, opts: { imageReturned: boolean }): { usd: number; detail: string } | { error: string } {
+export function geminiCostFromUsage(u: unknown, opts: { imageTokensRequired: boolean }): { usd: number; detail: string } | { error: string } {
   if (!u || typeof u !== "object" || Array.isArray(u)) return { error: "no usage block" };
   const g = u as GeminiUsage;
   const missing: string[] = [];
@@ -56,7 +57,7 @@ export function geminiCostFromUsage(u: unknown, opts: { imageReturned: boolean }
   const mods = g.output_tokens_by_modality;
   if (mods !== undefined && (!Array.isArray(mods) || mods.some((m) => !m || typeof m.modality !== "string" || !isCount(m.tokens)))) missing.push("output_tokens_by_modality (malformed)");
   const imgOut = Array.isArray(mods) ? mods.filter((m) => m?.modality === "image" && isCount(m.tokens)).reduce((a, m) => a + (m.tokens as number), 0) : 0;
-  if (opts.imageReturned && imgOut === 0) missing.push("output_tokens_by_modality[image]");
+  if (opts.imageTokensRequired && imgOut === 0) missing.push("output_tokens_by_modality[image]");
   if (missing.length) return { error: `usage block missing/invalid: ${missing.join(", ")}` };
   const input = g.total_input_tokens as number;
   const thought = g.total_thought_tokens ?? 0;

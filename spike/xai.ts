@@ -6,9 +6,10 @@
 import { join, relative } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { Ledger } from "./lib/ledger.ts";
-import { runPaidStep, LEDGER_PATH, type StepCost, type StepOutcome } from "./lib/step.ts";
+import { runPaidStep, LEDGER_PATH, EXIT_SPEND_GUARD, type StepOutcome } from "./lib/step.ts";
 import type { CallResult, CallSpec } from "./lib/http.ts";
-import { XAI, SOURCES } from "./lib/prices.ts";
+import { XAI } from "./lib/prices.ts";
+import { xaiCost, type XaiImage, type XaiResp } from "./lib/xai-shape.ts";
 import { saveImage, writeJson } from "./lib/save.ts";
 import { inspectImage, ratioLabel } from "./lib/image.ts";
 import { makeLogger } from "./lib/log.ts";
@@ -24,25 +25,6 @@ const GEN_URL = "https://api.x.ai/v1/images/generations";
 const EDIT_URL = "https://api.x.ai/v1/images/edits";
 
 // Prompts live in ./prompts.ts (shared with gemini.ts; same text as used for the xAI run).
-
-interface XaiImage { b64_json?: string; url?: string; mime_type?: string; revised_prompt?: string; respect_moderation?: boolean }
-interface XaiResp { data?: XaiImage[]; model?: string; usage?: { cost_in_usd_ticks?: number; [k: string]: unknown }; error?: unknown; code?: unknown }
-
-function xaiCost(r: CallResult, estimate: number): StepCost {
-  const j = r.json as XaiResp | null;
-  const ticks = j?.usage?.cost_in_usd_ticks;
-  if (typeof ticks === "number") return { usd: ticks / XAI.ticksPerUsd, basis: `billed: usage.cost_in_usd_ticks=${ticks} (${SOURCES.xaiCostTracking})`, billed: true };
-  if (r.outcome === "ok") return { usd: estimate, basis: `estimated (no usage field returned): ${XAI.basis}`, billed: false };
-  if (r.status === 422 && /Failed to deserialize/.test(r.text)) {
-    // Observed: schema/enum validation failures come back as 422 text/plain before any generation.
-    return { usd: 0, basis: "estimated $0: HTTP 422 request-body deserialization error (rejected before generation, no usage field); confirm against console", billed: false };
-  }
-  if (r.status !== null && r.status >= 400 && r.status < 500 && r.status !== 429) {
-    // xAI pricing page: "When your request is deemed to be in violation of our usage guideline by our system, we will still charge".
-    return { usd: null, basis: `unresolved: HTTP ${r.status} with no usage field; xAI may still charge for guideline violations (${SOURCES.xaiPricing}); reservation kept until console check`, billed: false };
-  }
-  return { usd: null, basis: `unresolved: ${r.outcome} status=${r.status}; reservation kept`, billed: false };
-}
 
 const RESULTS = join(OUT, "results.json");
 const prior = existsSync(RESULTS) ? (JSON.parse(readFileSync(RESULTS, "utf8")) as { steps?: Record<string, unknown>; runs?: unknown[] }) : null;
@@ -89,10 +71,14 @@ const outputInfo = (s: Saved | null | undefined) => (s ? (({ buf, mime, ...rest 
 
 async function main() {
   if (!hasKey("XAI_API_KEY")) { log("XAI_API_KEY not set; nothing sent."); return; }
-  // `extra` adds step-specific fields to the results.json entry; runPaidStep records the entry before the
-  // ledger is updated, so after a LedgerBusy abort results.json still matches the new dump (Argus N3).
-  const step = <P = undefined>(label: string, estimate: number, spec: CallSpec, persist?: (r: CallResult) => P, extra: (o: StepOutcome<P>) => Record<string, unknown> = () => ({})) =>
-    runPaidStep<P>({ ledger, provider: "xai", model: XAI.model, label, outDir: OUT, estimateUsd: estimate, estimateBasis: XAI.basis, spec, costOf: (r) => xaiCost(r, estimate), log, persist, record: (o) => record(o, extra(o)) });
+  // `extra` adds step-specific fields to the results.json entry. runPaidStep records the entry AFTER the
+  // ledger update (step.ts), or just before rethrowing if that update fails, so after a LedgerBusy abort
+  // results.json still matches the new dump (Argus N3, P3). A spend-guard refusal sets a non-zero exit (P6).
+  const step = async <P = undefined>(label: string, estimate: number, spec: CallSpec, persist?: (r: CallResult) => P, extra: (o: StepOutcome<P>) => Record<string, unknown> = () => ({})) => {
+    const o = await runPaidStep<P>({ ledger, provider: "xai", model: XAI.model, label, outDir: OUT, estimateUsd: estimate, estimateBasis: XAI.basis, spec, costOf: (r) => xaiCost(r, estimate), log, persist, record: (o) => record(o, extra(o)) });
+    if (o.refusedBySpendGuard) { process.exitCode = EXIT_SPEND_GUARD; log(`${label} not sent (spend guard); the script will exit ${EXIT_SPEND_GUARD}.`); }
+    return o;
+  };
 
   // 1) Generate. Plan default is 4:5 (plan :84 / :194), but xAI rejects 4:5 with HTTP 422 (recorded in
   //    01-generate-4x5.json) and the Founder decided to generate 3:4 and crop. So by default the 4:5 probe is

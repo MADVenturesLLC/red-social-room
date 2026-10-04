@@ -71,7 +71,7 @@ export interface LedgerOptions {
   spikeCapUsd?: number; // tests only; defaults to SPIKE_CAP_USD
   settleLockRetries?: number;
   settleLockRetryMs?: number;
-  /** Test seam for the bounded lock wait (defaults to a real blocking sleep). */
+  /** Test seam for the bounded lock wait (defaults to a real blocking sleep). reserve() never sleeps: it fails fast (Argus P5). */
   sleep?: (ms: number) => void;
 }
 
@@ -164,9 +164,15 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/**
+ * Test seam (Argus P5): every fsync the ledger does goes through here, so a test can check that the
+ * temp file is synced before the rename and the directory after it. Production code never replaces it.
+ */
+export const ledgerIo = { fsync: (fd: number): void => fsyncSync(fd) };
+
 function fsyncDir(dir: string): void {
   const fd = openSync(dir, "r");
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+  try { ledgerIo.fsync(fd); } finally { closeSync(fd); }
 }
 
 function writeAtomic(path: string, f: LedgerFile, exclusive = false): void {
@@ -174,7 +180,7 @@ function writeAtomic(path: string, f: LedgerFile, exclusive = false): void {
   const fd = openSync(tmp, "w");
   try {
     writeFileSync(fd, JSON.stringify(f, null, 2) + "\n");
-    fsyncSync(fd);
+    ledgerIo.fsync(fd);
   } finally { closeSync(fd); }
   if (exclusive && existsSync(path)) { unlinkSync(tmp); throw new Error(`${path} already exists; refusing to overwrite it.`); }
   renameSync(tmp, path); // atomic replace
@@ -231,13 +237,13 @@ export class Ledger {
    * without the check). With retries>0 it waits a bounded time (recording a result that already
    * happened must not be lost to a momentary lock; Argus F3).
    */
-  private withLock<T>(fn: (f: LedgerFile) => T, retries: number, retryMs: number, onBusy: (waitedMs: number) => Error, sleep: (ms: number) => void = sleepSync): T {
+  private withLock<T>(fn: (f: LedgerFile) => T, retries: number, retryMs: number, onBusy: (waitedMs: number) => Error): T {
     let fd = -1;
     for (let i = 0; fd < 0; i++) {
       try { fd = openSync(this.lockPath, "wx"); } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
         if (i >= retries) throw onBusy(i * retryMs);
-        sleep(retryMs);
+        this.sleep(retryMs);
       }
     }
     try {
@@ -253,7 +259,7 @@ export class Ledger {
 
   private withSettleLock<T>(what: string, id: string, fn: (f: LedgerFile) => T): T {
     return this.withLock(fn, this.settleRetries, this.settleRetryMs, (waited) => new LedgerBusy(
-      `Spend ledger stayed locked (${this.lockPath}) for ~${waited} ms while trying to ${what} entry ${id}. The entry is still counted at its estimate, so the cap is safe. ${STALE_LOCK_HELP} Then record the real cost with: node spike/ledger-reconcile.ts ${id} <usd>|not-charged "<note>" (reconcile needs the same lock, so it fails too until the lock is gone).`), this.sleep);
+      `Spend ledger stayed locked (${this.lockPath}) for ~${waited} ms while trying to ${what} entry ${id}. The entry is still counted at its estimate, so the cap is safe. ${STALE_LOCK_HELP} Then record the real cost with: node spike/ledger-reconcile.ts ${id} <usd>|not-charged "<note>" (reconcile needs the same lock, so it fails too until the lock is gone).`));
   }
 
   totals(month = currentMonthNY()): { month: number; spikeAllTime: number; byProvider: Record<string, number> } {

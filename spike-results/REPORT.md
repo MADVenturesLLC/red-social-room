@@ -134,7 +134,7 @@ Michael approved these at 10:32 PM ET:
   - all cap sums in integer micro-USD; a missing ledger fails closed (create one only with `spike/ledger-init.ts`); settle rejects negative/NaN/non-finite amounts and never overwrites a settled row; settle waits a bounded ~5 s for a busy lock
   - `spike/ledger-reconcile.ts` resolves a held reservation after a console check
   - every load validates every row and fails closed (`LedgerCorrupt`) on a missing, negative or non-micro amount, unknown status, bad month, etc.; amounts round UP to whole micro-USD
-  - offline tests: `npm test` (`spike/test/*.test.ts`, node:test, 66 tests). They include behaviour tests that run `xai.ts`, `gemini.ts` and `delete-interactions.ts` against a fake transport (`spike/test/fixtures/fetch-stub.mjs`, dummy keys): a default run sends no real-person probe and no xAI 4:5, `=1` sends them, every Gemini POST carries `store:false`, and the FORCE_REDELETE guard holds
+  - offline tests: `npm test` (`spike/test/*.test.ts`, node:test, 82 tests). They include behaviour tests that run `xai.ts`, `gemini.ts` and `delete-interactions.ts` against a fake transport (`spike/test/fixtures/fetch-stub.mjs`, dummy keys): a default run sends no real-person probe and no xAI 4:5, `=1` sends them, every Gemini POST carries `store:false`, the FORCE_REDELETE guard holds, and a spend-guard refusal exits 3
 - `spike/lib/http.ts` — the section 7 call policy:
   - 120 s timeout
   - one retry for connection errors before any response
@@ -146,7 +146,11 @@ Michael approved these at 10:32 PM ET:
 - `spike/preflight.ts` (free key and model checks), `spike/check-secrets.ts` (leak scan), `spike/ledger-report.ts`, `spike/ledger-init.ts`, `spike/ledger-reconcile.ts`, `spike/delete-interactions.ts` (one-off cleanup of stored Gemini interactions; now refuses to re-send).
 - Opt-in flags (`spike/lib/flags.ts`): the real-person refusal probe and the xAI 4:5 probe run only with `RUN_REFUSAL_PROBE=1` / `RUN_XAI_4X5_PROBE=1`. `RUN_REFUSAL_PROBE=1` applies to both providers.
 - `results.json` step entries are written by `runPaidStep` after the ledger update, or before rethrowing if it fails (`ledger_status: "update_failed"`), so they always describe the latest call and match its dump.
-- Gemini cost (`spike/lib/gemini-shape.ts`, `spike/lib/prices.ts`): a 200 whose `usage` lacks the expected token fields is held **unresolved** at its reservation, never settled at $0.
+- Cost rules (`spike/lib/gemini-shape.ts`, `spike/lib/xai-shape.ts`, `spike/lib/prices.ts`), each status class tested: an unknown cost is held **unresolved** at its reservation, never settled at $0.
+  - Gemini: a 200 is priced from usage tokens; missing/incomplete usage is unresolved. Image-rate tokens are required unless the answer is a recognised text-only reply, so a changed image block shape cannot be priced at the text rate. A 4xx with no usage is $0; a 4xx with usage, 429, 5xx or timeout is unresolved.
+  - xAI: billed ticks win; a 200 without usage is charged at the estimate; only the 422 "Failed to deserialize" rejection is $0; any other 4xx, 429, 5xx or timeout is unresolved.
+- `xai.ts` / `gemini.ts` exit **3** when the spend guard refuses a step (README "Exit codes").
+- Ledger writes fsync the temp file, rename it, then fsync the directory; `reserve()` fails fast on a held lock (both pinned by tests).
 
 ## Key-leak check
 
@@ -156,12 +160,12 @@ Michael approved these at 10:32 PM ET:
 
 It scans the working tree (minus `node_modules`), every file under `.git` except `objects/`, every loose and packed object via `git cat-file --batch-all-objects` (parsed per object and cross-checked against `--batch-check`), and `git log --all --reflog -p --binary`. Any git failure exits 2. Findings print only the rule, location and match length. A positive and negative self-test runs first. A canary file containing synthetic key shapes was flagged (exit 1) and then removed.
 
-Output (run offline inside `unshare -rn` on the working tree just before the commit, keys loaded; the object counts are the pre-commit store, which still holds both backup commits):
+Output (run offline inside `unshare -rn` on the staged tree just before the follow-up commit on top of 47b55f0, keys loaded; the object counts are the pre-commit store, which still holds both backup commits and 47b55f0):
 ```
-$ node spike/check-secrets.ts   # 2026-10-04 5:04 AM ET, staged tree before the commit
+$ node spike/check-secrets.ts   # 2026-10-04 6:47 AM ET, staged tree before the follow-up commit
 self-test ok: 12 pattern rules fired on synthetic samples and stayed quiet on negatives; exact-match positive control ok for XAI_API_KEY,GEMINI_API_KEY
 exact-match: keys compared=XAI_API_KEY,GEMINI_API_KEY needles/key=full+base64+head12+mid12+tail12
-scanned: worktree_files=75 extra_files=0 git_meta_files=27 git_objects=116 (blob=100, tree=14, commit=2; loose=15, in_pack=101) git_log_bytes=10689079
+scanned: worktree_files=76 extra_files=0 git_meta_files=30 git_objects=140 (blob=115, tree=22, commit=3; loose=39, in_pack=101) git_log_bytes=16098110
 pattern_hits=0 exact_hits=0
 RESULT: CLEAN
 (exit 0)

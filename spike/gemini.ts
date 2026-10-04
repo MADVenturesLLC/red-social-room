@@ -7,7 +7,7 @@
 import { join, relative } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { Ledger } from "./lib/ledger.ts";
-import { runPaidStep, LEDGER_PATH, type StepOutcome } from "./lib/step.ts";
+import { runPaidStep, LEDGER_PATH, EXIT_SPEND_GUARD, type StepOutcome } from "./lib/step.ts";
 import { call, dump, type CallResult, type CallSpec } from "./lib/http.ts";
 import { GEMINI } from "./lib/prices.ts";
 import { geminiCost, outputImages, outputText, type Interaction } from "./lib/gemini-shape.ts";
@@ -93,10 +93,14 @@ async function main() {
     return finish(`preflight HTTP ${pr.status}: ${JSON.stringify((pr.json as { error?: { status?: string; details?: Array<{ reason?: string }> } } | null)?.error?.details?.[0]?.reason ?? (pr.json as { error?: { status?: string } } | null)?.error?.status ?? pr.outcome)}`);
   }
 
-  // `extra` adds step-specific fields to the results.json entry; runPaidStep records the entry before the
-  // ledger is updated, so after a LedgerBusy abort results.json still matches the new dump (Argus N3).
-  const step = <P = undefined>(label: string, estimate: number, body: unknown, persist?: (r: CallResult) => P, extra: (o: StepOutcome<P>) => Record<string, unknown> = () => ({})) =>
-    runPaidStep<P>({ ledger, provider: "google", model: GEMINI.model, label, outDir: OUT, estimateUsd: estimate, estimateBasis: GEMINI.basis, spec: { keyName: "GEMINI_API_KEY", method: "POST", url: URL_INTERACTIONS, headers: API_REVISION, body: withStoreFalse(body) }, costOf: (r) => geminiCost(r, estimate), log, persist, record: (o) => record(o, extra(o)) });
+  // `extra` adds step-specific fields to the results.json entry. runPaidStep records the entry AFTER the
+  // ledger update (step.ts), or just before rethrowing if that update fails, so after a LedgerBusy abort
+  // results.json still matches the new dump (Argus N3, P3). A spend-guard refusal sets a non-zero exit (P6).
+  const step = async <P = undefined>(label: string, estimate: number, body: unknown, persist?: (r: CallResult) => P, extra: (o: StepOutcome<P>) => Record<string, unknown> = () => ({})) => {
+    const o = await runPaidStep<P>({ ledger, provider: "google", model: GEMINI.model, label, outDir: OUT, estimateUsd: estimate, estimateBasis: GEMINI.basis, spec: { keyName: "GEMINI_API_KEY", method: "POST", url: URL_INTERACTIONS, headers: API_REVISION, body: withStoreFalse(body) }, costOf: (r) => geminiCost(r, estimate), log, persist, record: (o) => record(o, extra(o)) });
+    if (o.refusedBySpendGuard) { process.exitCode = EXIT_SPEND_GUARD; log(`${label} not sent (spend guard); the script will exit ${EXIT_SPEND_GUARD}.`); }
+    return o;
+  };
   /** persist callback for runPaidStep: saves the first output image before the ledger is settled (Argus F3). */
   const saveAs = (name: string) => (r: CallResult) => {
     const img = outputImages((r.json ?? null) as Interaction | null)[0];

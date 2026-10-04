@@ -1,15 +1,16 @@
-// Behaviour tests for the paid scripts with a FAKE transport (Argus N2, N3, N9, N10, N13).
+// Behaviour tests for the paid scripts with a FAKE transport (Argus N2, N3, N9, N10, N13, P2, P6).
 // Each test copies spike/ into a temp dir and runs the copy as a child process with:
 //   - `--import fixtures/fetch-stub.mjs` (fetch replaced; every request recorded, nothing leaves the box)
 //   - dummy key values only (the real XAI_API_KEY / GEMINI_API_KEY are never passed to the child)
 //   - a fresh temp ledger, so the repo's spike-results/ is never touched.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Ledger } from "../lib/ledger.ts";
+import { EXIT_SPEND_GUARD } from "../lib/step.ts";
 import { PROMPTS } from "../prompts.ts";
 
 const REPO = join(import.meta.dirname, "..", "..");
@@ -165,3 +166,53 @@ test("N10 delete-interactions: already done -> sends nothing by default; FORCE_R
   assert.equal(f.reqs.filter((q) => q.method === "DELETE").length, 5);
   assert.equal(f.reqs.filter((q) => q.method === "GET").length, 5);
 }, { geminiDumps: true }));
+
+// ---- Argus P6: a spend-guard refusal makes the script exit non-zero (3), with nothing sent ----
+const prefill = (dir: string, usd: number) => new Ledger(join(dir, "spike-results", "ledger.json")).reserve({ provider: "google", model: "m", label: "prefill", estimate_usd: usd, estimate_basis: "test" });
+
+test("P6 xAI: stale ledger lock at start -> 0 POSTs, exit 3, results.json marks the refusal", withSandbox((dir) => {
+  assert.equal(EXIT_SPEND_GUARD, 3);
+  writeFileSync(join(dir, "spike-results", "ledger.lock"), "");
+  const r = run(dir, "xai.ts");
+  assert.equal(r.status, 3, r.out);
+  assert.equal(r.reqs.length, 0);
+  assert.match(r.out, /SPEND GUARD REFUSED 01b-generate-3x4/);
+  assert.match(r.out, /delete spike-results\/ledger\.lock/);
+  const res = JSON.parse(readFileSync(join(dir, "spike-results", "xai", "results.json"), "utf8"));
+  assert.match(res.steps["01b-generate-3x4"].refused_by_spend_guard, /ledger is locked/);
+  assert.equal(res.stopped_early, "spend guard");
+}));
+
+test("P6 xAI: spike cap reached mid-run -> stops before the call that would pass $3, exit 3", withSandbox((dir) => {
+  prefill(dir, 2.88); // + gen 0.04 billed + edit 0.07 = 2.99; the second edit (est 0.07) would pass $3
+  const r = run(dir, "xai.ts");
+  assert.equal(r.status, 3, r.out);
+  assert.equal(r.posts.length, 2, r.out);
+  assert.match(r.out, /SPEND GUARD REFUSED 03-edit-aspect-16x9: Spike cap/);
+}));
+
+test("P6 Gemini: spike cap already reached -> only the free GET, exit 3", withSandbox((dir) => {
+  prefill(dir, 2.95);
+  const r = run(dir, "gemini.ts");
+  assert.equal(r.status, 3, r.out);
+  assert.equal(r.posts.length, 0);
+  assert.equal(r.reqs.filter((q) => q.method === "GET").length, 1);
+  assert.match(r.out, /SPEND GUARD REFUSED 01-generate-3x4: Spike cap/);
+}));
+
+test("P6: a run with no refusal still exits 0 (the exit code is tied to the refusal only)", withSandbox((dir) => {
+  prefill(dir, 2.0);
+  assert.equal(run(dir, "gemini.ts").status, 0);
+}));
+
+// ---- Argus P2 end to end: unrecognised image shape + no per-modality list -> unresolved, not text rate ----
+test("P2 Gemini: a changed image block without output_tokens_by_modality is held unresolved at the estimate", withSandbox((dir) => {
+  const r = run(dir, "gemini.ts", { STUB_GEMINI_SHAPE: "v2" });
+  assert.equal(r.status, 0, r.out);
+  assert.equal(r.posts.length, 1, "stops after step 1: no image recognised");
+  const rows = new Ledger(join(dir, "spike-results", "ledger.json")).entries();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "unresolved");
+  assert.equal(rows[0].actual_usd, null);
+  assert.match(rows[0].cost_basis ?? "", /output_tokens_by_modality\[image\]/);
+}));

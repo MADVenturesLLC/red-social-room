@@ -20,6 +20,9 @@ export interface StepOutcome<P = unknown> {
   stopReason?: string;
 }
 
+/** Exit code of xai.ts / gemini.ts when the spend guard refused a step (cap reached or ledger locked; nothing sent). Argus P6. */
+export const EXIT_SPEND_GUARD = 3;
+
 export const LEDGER_PATH = join(import.meta.dirname, "..", "..", "spike-results", "ledger.json");
 
 export async function runPaidStep<P = undefined>(opts: {

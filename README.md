@@ -29,6 +29,8 @@ node spike/gemini.ts           # paid (~$0.27 est.), gated by a free preflight; 
 node spike/delete-interactions.ts  # one-off, DONE 2026-10-03 22:33 ET; refuses to re-send unless FORCE_REDELETE=1
 ```
 
+Exit codes of `xai.ts` / `gemini.ts`: `0` finished (or stopped for a recorded reason such as a provider error or no image); `1` aborted on an error (e.g. `LedgerBusy`, `LedgerCorrupt`); `3` a step was refused by the spend guard (cap reached or ledger locked; that step and the rest were not sent).
+
 **Opt-in probes (off by default).** These steps are skipped unless the variable is exactly `1`:
 
 | Variable | Step | Why it is off |

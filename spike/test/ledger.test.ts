@@ -1,11 +1,11 @@
 // Offline spend-guard tests (no network; temp ledgers only). Run: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, unlinkSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, unlinkSync, readFileSync, fstatSync, statSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { Ledger, LedgerBusy, LedgerCorrupt, LedgerMissing, SpendRefused, SETTLE_LOCK_RETRIES, SETTLE_LOCK_RETRY_MS, currentMonthNY, validateLedgerFile, type LedgerOptions } from "../lib/ledger.ts";
+import { Ledger, LedgerBusy, LedgerCorrupt, LedgerMissing, SpendRefused, SETTLE_LOCK_RETRIES, SETTLE_LOCK_RETRY_MS, currentMonthNY, validateLedgerFile, ledgerIo, type LedgerOptions } from "../lib/ledger.ts";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const r = (l: Ledger, usd: number, provider: "xai" | "google" = "xai", label = "t") => l.reserve({ provider, model: "m", label, estimate_usd: usd, estimate_basis: "test" });
@@ -168,28 +168,33 @@ test("N1: the committed spike-results/ledger.json passes row validation", () => 
   assert.deepEqual(validateLedgerFile(JSON.parse(readFileSync(join(ROOT, "spike-results", "ledger.json"), "utf8"))), []);
 });
 
-const BAD: Array<[string, unknown]> = [
-  ["estimate_usd missing (Argus B1)", goodRow({ status: "reserved", actual_usd: null, estimate_usd: undefined })],
-  ["actual_usd not a number (B3)", goodRow({ actual_usd: "abc" })],
-  ["actual_usd = -10 (B2)", goodRow({ actual_usd: -10 })],
-  ["actual_usd NaN-ish null on a settled row", goodRow({ actual_usd: null })],
-  ["actual_usd set on a reserved row", goodRow({ status: "reserved", actual_usd: 0.04 })],
-  ["amount not whole micro-USD", goodRow({ actual_usd: 0.0000001 })],
-  ["estimate_usd 0", goodRow({ estimate_usd: 0 })],
-  ["absurd amount 1e300", goodRow({ actual_usd: 1e300 })],
-  ["unknown status", goodRow({ status: "paid" })],
-  ["unknown provider", goodRow({ provider: "openai" })],
-  ["month wrong type (B13)", goodRow({ month: 202610 })],
-  ["month wrong format", goodRow({ month: "2026-13" })],
-  ["spike not true", goodRow({ spike: "yes" })],
-  ["http_status not a code", goodRow({ http_status: "200" })],
-  ["null row (B4)", null],
-  ["id missing", goodRow({ id: undefined })],
+// Each bad row names the check that must catch it, so a clean removal of any one check fails a test
+// (Argus P4: "unknown status" used to be caught only by the actual_usd rule).
+const BAD: Array<[string, unknown, RegExp]> = [
+  ["estimate_usd missing (Argus B1)", goodRow({ status: "reserved", actual_usd: null, estimate_usd: undefined }), /estimate_usd must be/],
+  ["actual_usd not a number (B3)", goodRow({ actual_usd: "abc" }), /settled row needs actual_usd/],
+  ["actual_usd = -10 (B2)", goodRow({ actual_usd: -10 }), /settled row needs actual_usd/],
+  ["actual_usd NaN-ish null on a settled row", goodRow({ actual_usd: null }), /settled row needs actual_usd/],
+  ["actual_usd set on a reserved row", goodRow({ status: "reserved", actual_usd: 0.04 }), /reserved row must have actual_usd null/],
+  ["amount not whole micro-USD", goodRow({ actual_usd: 0.0000001 }), /settled row needs actual_usd/],
+  ["estimate_usd 0", goodRow({ estimate_usd: 0 }), /estimate_usd must be/],
+  ["absurd amount 1e300", goodRow({ actual_usd: 1e300 }), /settled row needs actual_usd/],
+  ["unknown status", goodRow({ status: "paid" }), /status must be one of/],
+  ["unknown status with actual_usd null (P4: only the status rule can catch it)", goodRow({ status: "paid", actual_usd: null }), /status must be one of/],
+  ["status missing", goodRow({ status: undefined, actual_usd: null }), /status must be one of/],
+  ["unknown provider", goodRow({ provider: "openai" }), /provider must be one of/],
+  ["month wrong type (B13)", goodRow({ month: 202610 }), /month must be/],
+  ["month wrong format", goodRow({ month: "2026-13" }), /month must be/],
+  ["spike not true", goodRow({ spike: "yes" }), /spike must be true/],
+  ["http_status not a code", goodRow({ http_status: "200" }), /http_status must be/],
+  ["null row (B4)", null, /not an object/],
+  ["id missing", goodRow({ id: undefined }), /id must be/],
 ];
-for (const [name, row] of BAD) {
+for (const [name, row, why] of BAD) {
   test(`N1: refuses a ledger with a bad row: ${name}`, withLedger((l) => {
     writeFileSync(l.path, JSON.stringify(fileWith([goodRow(), row])));
-    assert.throws(() => new Ledger(l.path), (e: unknown) => e instanceof LedgerCorrupt && /row 1/.test((e as Error).message));
+    assert.throws(() => new Ledger(l.path), (e: unknown) => e instanceof LedgerCorrupt && /row 1/.test((e as Error).message) && why.test((e as Error).message));
+    assert.match(validateLedgerFile(fileWith([goodRow(), row])).join(";"), why);
   }));
 }
 
@@ -254,3 +259,40 @@ test("N7: ledger-report prints integer-summed totals, with reserved rows counted
   assert.equal(out.status, 0, out.stderr);
   assert.ok(out.stdout.includes("billed (provider-reported) $0.000123 (123 micro-USD) | estimated $0.270000 (270000 micro-USD) | unresolved/reserved $0.060000 (60000 micro-USD) | total $0.330123 (330123 micro-USD)"), out.stdout);
 }));
+
+// ---- Argus P5: reserve() fails fast on a held lock; every write fsyncs the file, renames, then fsyncs the dir ----
+test("P5: reserve() never waits for the lock: one attempt, zero sleeps, SpendRefused, nothing added", withLedger((l) => {
+  let sleeps = 0;
+  const l2 = new Ledger(l.path, { sleep: () => { sleeps++; } });
+  writeFileSync(l.lockPath, "");
+  assert.throws(() => r(l2, 0.06), (e: unknown) => e instanceof SpendRefused && /ledger is locked/.test((e as Error).message));
+  assert.equal(sleeps, 0, "reserve() must not wait (a waiting reserve could send while another run is mid-write)");
+  unlinkSync(l.lockPath);
+  assert.equal(l2.entries().length, 0);
+}));
+
+test("P5: a ledger write fsyncs the temp file, renames it, then fsyncs the ledger directory", withLedger((l, dir) => {
+  const seen: Array<{ dir: boolean; ino: number; ledgerHasRow: boolean }> = [];
+  const real = ledgerIo.fsync;
+  ledgerIo.fsync = (fd) => {
+    const st = fstatSync(fd);
+    seen.push({ dir: st.isDirectory(), ino: st.ino, ledgerHasRow: readFileSync(l.path, "utf8").includes('"label": "fsync-probe"') });
+    real(fd);
+  };
+  try { r(l, 0.06, "xai", "fsync-probe"); } finally { ledgerIo.fsync = real; }
+  assert.equal(seen.length, 2, JSON.stringify(seen));
+  assert.deepEqual([seen[0].dir, seen[0].ledgerHasRow], [false, false], "temp file synced BEFORE the rename");
+  assert.deepEqual([seen[1].dir, seen[1].ino, seen[1].ledgerHasRow], [true, statSync(dir).ino, true], "ledger dir synced AFTER the rename");
+}));
+
+// ---- Argus P7: credential file names are ignored, tracked files are not ----
+test("P7: .gitignore covers credential JSON names and keeps the tracked JSON files", () => {
+  const d = mkdtempSync(join(tmpdir(), "rsr-ignore-"));
+  try {
+    assert.equal(spawnSync("git", ["init", "-q", d]).status, 0);
+    copyFileSync(join(ROOT, ".gitignore"), join(d, ".gitignore"));
+    const ignored = (f: string) => spawnSync("git", ["-C", d, "check-ignore", "-q", "--no-index", f]).status === 0;
+    for (const f of ["service-account.json", "prod-service-account.json", "my_service_account.json", "client_secret_123.apps.googleusercontent.com.json", "gcp-key.json", "api_key.json", "credentials.json", "application_default_credentials.json", "keys/x.p12", ".env", ".npmrc", "id_rsa", "spike-results/ledger.lock"]) assert.ok(ignored(f), `${f} should be ignored`);
+    for (const f of ["package.json", "package-lock.json", "tsconfig.json", "spike-results/ledger.json", "spike-results/xai/results.json", "spike-results/gemini/05-refusal-probe.json"]) assert.ok(!ignored(f), `${f} must stay trackable`);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
