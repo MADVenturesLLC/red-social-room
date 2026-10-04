@@ -5,7 +5,7 @@ export const SOURCES = {
   xaiPricing: "https://docs.x.ai/developers/pricing",
   xaiModel: "https://docs.x.ai/developers/models/grok-imagine-image-2.0",
   xaiCostTracking: "https://docs.x.ai/developers/cost-tracking",
-  research: "madc-rulings/docs-drafts/red-social-room/RESEARCH-models.md:47-50",
+  research: "docs/plan/RESEARCH-models.md:47-50",
   geminiPricing: "https://ai.google.dev/gemini-api/docs/pricing",
 } as const;
 

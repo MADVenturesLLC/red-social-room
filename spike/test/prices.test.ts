@@ -235,5 +235,28 @@ test("R3/C11 xAI: a 422 text starting 'Failed to deserialize' but not '... the J
   NO_COST(xaiCost(resp(422, "Failed to deserialize the JSON payload: prompt flagged"), 0.06), "'body' replaced by 'payload'");
   NO_COST(xaiCost(resp(422, "Failed to deserialize the JSON"), 0.06), "phrase cut before 'body'");
   const full = xaiCost(resp(422, "Failed to deserialize the JSON body into the target type: aspect_ratio: unknown variant `4:5`"), 0.06);
-  assert.equal(full.usd, 0); assert.match(full.basis, /deserialization/);
+  assert.equal(full.usd, 0); assert.match(full.basis, /deserialization/); assert.equal(full.billed, false, "$0 is an estimate, not billed");
+});
+
+// ---- Argus S1b (8ba548c) + I1 (5691a4e): partial-word cuts of "body", whitespace or case variants and a dropped "JSON" are held, not $0 ----
+test("S1b xAI: a 422 text cut inside 'body', or with whitespace that differs from the phrase, is held unresolved", () => {
+  const stem = "Failed to deserialize the JSON";
+  for (const p of ["", "b", "bo", "bod"]) {
+    // every proper prefix of "body", bare and followed by a character that does not continue "body"
+    NO_COST(xaiCost(resp(422, `${stem} ${p}`), 0.06), `cut to '... JSON ${p}'`);
+    NO_COST(xaiCost(resp(422, `${stem} ${p}x: prompt flagged`), 0.06), `'... JSON ${p}x'`);
+  }
+  NO_COST(xaiCost(resp(422, " Failed to deserialize the JSON body into the target type"), 0.06), "leading space");
+  NO_COST(xaiCost(resp(422, "Failed to deserialize the JSON  body into the target type"), 0.06), "two spaces before 'body'");
+  NO_COST(xaiCost(resp(422, "Failed to deserialize the JSONbody into the target type"), 0.06), "no space before 'body'");
+  NO_COST(xaiCost(resp(422, "Failed to deserialize the JSON\tbody into the target type"), 0.06), "tab before 'body'");
+  NO_COST(xaiCost(resp(422, "Failed to deserialize the JSON Body into the target type"), 0.06), "capital B in 'Body'");
+  NO_COST(xaiCost(resp(422, "Failed  to deserialize the JSON body"), 0.06), "two spaces after 'Failed'");
+  NO_COST(xaiCost(resp(422, "Failed to deserialize the body"), 0.06), "'JSON' missing");
+});
+
+// ---- Argus S1c (8ba548c): the $0 rule keys on the phrase, not on the observed continuation ----
+test("S1c xAI: a 422 text starting with the full phrase but a different continuation is still $0", () => {
+  const c = xaiCost(resp(422, "Failed to deserialize the JSON body: missing field `prompt` at line 1 column 42"), 0.06);
+  assert.equal(c.usd, 0); assert.match(c.basis, /deserialization/); assert.equal(c.billed, false, "$0 is an estimate, not billed");
 });

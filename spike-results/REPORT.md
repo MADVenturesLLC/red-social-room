@@ -6,7 +6,7 @@ Runs on Saturday, Oct 3, 2026 (all times ET, Node 22.19, plain `fetch`, no depen
   - 10:06 PM: the free preflight `spike/preflight.ts` (`preflight/gemini-model-get-2026-10-03T2206-bad-paste.json`, `preflight/run.log:3-4`)
   - 10:11 PM: the first `spike/gemini.ts` attempt, stopped by its own free key check (`gemini/00-preflight-model-get-2026-10-03T2211-bad-paste.json`)
 
-Plan: `madc-rulings/docs-drafts/red-social-room/TECH-PLAN-v1.md` section 9 (A0, lines 192–196) and section 7 (lines 147–166). Author: Hephaestus (builder).
+Plan: `docs/plan/TECH-PLAN-v1.md` section 9 (A0, lines 192–196) and section 7 (lines 147–166). Author: Hephaestus (builder).
 
 Every number below comes from a real API response saved in this folder, unless it is labeled **estimated**.
 
@@ -134,7 +134,7 @@ Michael approved these at 10:32 PM ET:
   - all cap sums in integer micro-USD; a missing ledger fails closed (create one only with `spike/ledger-init.ts`); settle rejects negative/NaN/non-finite amounts and never overwrites a settled row; settle waits a bounded ~5 s for a busy lock
   - `spike/ledger-reconcile.ts` resolves a held reservation after a console check
   - every load validates every row and fails closed (`LedgerCorrupt`) on a missing, negative or non-micro amount, unknown status, bad month, etc.; amounts round UP to whole micro-USD
-  - offline tests: `npm test` (`spike/test/*.test.ts`, node:test, 105 tests). They include behaviour tests that run `xai.ts`, `gemini.ts` and `delete-interactions.ts` against a fake transport (`spike/test/fixtures/fetch-stub.mjs`, dummy keys): a default run sends no real-person probe and no xAI 4:5, `=1` sends them, every Gemini POST carries `store:false`, the FORCE_REDELETE guard holds, and a spend-guard refusal exits 3
+  - offline tests: `npm test` (`spike/test/*.test.ts`, node:test, 107 tests). They include behaviour tests that run `xai.ts`, `gemini.ts` and `delete-interactions.ts` against a fake transport (`spike/test/fixtures/fetch-stub.mjs`, dummy keys): a default run sends no real-person probe and no xAI 4:5, `=1` sends them, every Gemini POST carries `store:false`, the FORCE_REDELETE guard holds, and a spend-guard refusal exits 3
 - `spike/lib/http.ts` — the section 7 call policy:
   - 120 s timeout
   - one retry for connection errors before any response
@@ -196,4 +196,4 @@ The same scan with both keys unset prints `exact-match: SKIPPED (no keys in env)
   - API keys (auth-key transition; unrestricted standard keys rejected): https://ai.google.dev/gemini-api/docs/api-key
   - error format (400 `API_KEY_INVALID`): https://ai.google.dev/gemini-api/docs/generate-content/api-errors
   - data retention: https://ai.google.dev/gemini-api/docs/interactions-overview · https://ai.google.dev/gemini-api/docs/zdr · https://ai.google.dev/gemini-api/docs/logs-policy
-- Plan and research: `madc-rulings/docs-drafts/red-social-room/TECH-PLAN-v1.md`, `RESEARCH-models.md`, `FOUNDER-DECISIONS.md`
+- Plan and research: `docs/plan/TECH-PLAN-v1.md`, `docs/plan/RESEARCH-models.md`, `docs/plan/FOUNDER-DECISIONS.md`

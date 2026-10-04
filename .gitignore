@@ -25,5 +25,5 @@ spike-results/ledger.lock
 # crash leftovers of atomic writes: ledger.json.tmp-<pid> and <image>.jpg.tmp
 # (one pattern covers both; it also hides names like x.tmpl, so don't name tracked files *.tmp*)
 *.tmp*
-# macOS (the app runs on the iMac first, FD 2)
+# macOS (the app runs on the iMac first, FOUNDER-DECISIONS item 2)
 .DS_Store

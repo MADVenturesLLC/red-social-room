@@ -1,6 +1,6 @@
 # Plan gaps found in Act 0
 
-Each item cites `TECH-PLAN-v1.md` (T) or `RESEARCH-models.md` (R), both in `madc-rulings/docs-drafts/red-social-room/`, by file:line, plus the evidence for it.
+Each item cites `TECH-PLAN-v1.md` (T) or `RESEARCH-models.md` (R), both in `docs/plan/`, by file:line, plus the evidence for it.
 - "Needs Michael" marks items that need a decision rather than an engineering fix.
 - **RESOLVED** items were answered by the Google run (10:25 PM ET) and are kept for traceability.
 
