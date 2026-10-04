@@ -1,6 +1,6 @@
 # MADVentures Red Social Room
 
-Act 0 spike only (see `spike-results/REPORT.md`). Plan: `madc-rulings/docs-drafts/red-social-room/TECH-PLAN-v1.md`.
+Act 0 spike only (see `spike-results/REPORT.md`). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
 
 ## Requirements
 
