@@ -1,4 +1,4 @@
-// Behaviour tests for the paid scripts with a FAKE transport (Argus N2, N3, N9, N10, N13, P2, P6).
+// Behaviour tests for the paid scripts with a FAKE transport (Argus N2, N3, N9, N10, N13, P2, P6, Q1, Q2, Q5).
 // Each test copies spike/ into a temp dir and runs the copy as a child process with:
 //   - `--import fixtures/fetch-stub.mjs` (fetch replaced; every request recorded, nothing leaves the box)
 //   - dummy key values only (the real XAI_API_KEY / GEMINI_API_KEY are never passed to the child)
@@ -215,4 +215,43 @@ test("P2 Gemini: a changed image block without output_tokens_by_modality is held
   assert.equal(rows[0].status, "unresolved");
   assert.equal(rows[0].actual_usd, null);
   assert.match(rows[0].cost_basis ?? "", /output_tokens_by_modality\[image\]/);
+}));
+
+// ---- Argus Q1 end to end: his "gem-hole" response is held, not settled at $0.00466 ----
+test("Q1 Gemini: image in an extra step key, no modality list, 1549 output tokens -> row unresolved (F15), not text rate", withSandbox((dir) => {
+  const r = run(dir, "gemini.ts", { STUB_GEMINI_SHAPE: "hole" });
+  assert.equal(r.status, 0, r.out);
+  assert.equal(r.posts.length, 1);
+  const rows = new Ledger(join(dir, "spike-results", "ledger.json")).entries();
+  assert.equal(rows[0].status, "unresolved");
+  assert.equal(rows[0].actual_usd, null);
+  assert.match(rows[0].cost_basis ?? "", /F15/);
+}));
+
+// ---- Argus Q2 end to end: steps:[null] no longer loses the paid response ----
+test("Q2 Gemini: steps:[null] -> no throw; dump written; F15 settles from the image-rate usage; results.json describes the call; exit 0", withSandbox((dir) => {
+  const OUT = join(dir, "spike-results", "gemini");
+  const r = run(dir, "gemini.ts", { STUB_GEMINI_SHAPE: "nullstep" });
+  assert.equal(r.status, 0, r.out);
+  assert.equal(r.posts.length, 1, "stops: no generated image");
+  const dump = JSON.parse(readFileSync(join(OUT, "01-generate-3x4.json"), "utf8"));
+  assert.deepEqual(dump.response.body.steps, [null]);
+  const rows = new Ledger(join(dir, "spike-results", "ledger.json")).entries();
+  assert.equal(rows[0].status, "settled"); // usage carries 1120 image tokens, so F15 settles at the image rate
+  assert.equal(rows[0].actual_usd, 0.0685);
+  assert.match(rows[0].cost_basis ?? "", /F15/);
+  const res = JSON.parse(readFileSync(join(OUT, "results.json"), "utf8"));
+  assert.equal(res.steps["01-generate-3x4"].ledger_status, "settled");
+  assert.deepEqual(res.steps["01-generate-3x4"].step_types, [null]);
+  assert.equal(res.stopped_early, "no generated image");
+}));
+
+// ---- Argus Q5: no key -> xai.ts still writes results.json via finish("no key") ----
+test("Q5 xAI: no key -> nothing sent, exit 0, results.json records stopped_early 'no key'", withSandbox((dir) => {
+  const r = run(dir, "xai.ts", { XAI_API_KEY: "" });
+  assert.equal(r.status, 0, r.out);
+  assert.equal(r.reqs.length, 0);
+  const res = JSON.parse(readFileSync(join(dir, "spike-results", "xai", "results.json"), "utf8"));
+  assert.equal(res.stopped_early, "no key");
+  assert.equal(res.runs.at(-1).stopped_early, "no key");
 }));

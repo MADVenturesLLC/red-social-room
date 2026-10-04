@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, unlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { Ledger, LedgerBusy, LedgerCorrupt, LedgerMissing, SpendRefused, SETTLE_LOCK_RETRIES, SETTLE_LOCK_RETRY_MS, currentMonthNY, validateLedgerFile, ledgerIo, type LedgerOptions } from "../lib/ledger.ts";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -189,6 +190,9 @@ const BAD: Array<[string, unknown, RegExp]> = [
   ["http_status not a code", goodRow({ http_status: "200" }), /http_status must be/],
   ["null row (B4)", null, /not an object/],
   ["id missing", goodRow({ id: undefined }), /id must be/],
+  ["created_at missing (Q4)", goodRow({ created_at: undefined }), /created_at must be a string/],
+  ["created_at not a string (Q4)", goodRow({ created_at: 20261004 }), /created_at must be a string/],
+  ["prior_status unknown (Q4)", goodRow({ prior_status: "paid" }), /prior_status is not a known status/],
 ];
 for (const [name, row, why] of BAD) {
   test(`N1: refuses a ledger with a bad row: ${name}`, withLedger((l) => {
@@ -285,6 +289,15 @@ test("P5: a ledger write fsyncs the temp file, renames it, then fsyncs the ledge
   assert.deepEqual([seen[1].dir, seen[1].ino, seen[1].ledgerHasRow], [true, statSync(dir).ino, true], "ledger dir synced AFTER the rename");
 }));
 
+test("Q7: the production fsync hook really calls fs.fsyncSync (file + directory per write)", withLedger((l) => {
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const real = fs.fsyncSync; let calls = 0;
+  fs.fsyncSync = ((fd: number) => { calls++; return real(fd); }) as typeof fs.fsyncSync;
+  syncBuiltinESMExports();
+  try { r(l, 0.06); } finally { fs.fsyncSync = real; syncBuiltinESMExports(); }
+  assert.equal(calls, 2);
+}));
+
 // ---- Argus P7: credential file names are ignored, tracked files are not ----
 test("P7: .gitignore covers credential JSON names and keeps the tracked JSON files", () => {
   const d = mkdtempSync(join(tmpdir(), "rsr-ignore-"));
@@ -292,7 +305,7 @@ test("P7: .gitignore covers credential JSON names and keeps the tracked JSON fil
     assert.equal(spawnSync("git", ["init", "-q", d]).status, 0);
     copyFileSync(join(ROOT, ".gitignore"), join(d, ".gitignore"));
     const ignored = (f: string) => spawnSync("git", ["-C", d, "check-ignore", "-q", "--no-index", f]).status === 0;
-    for (const f of ["service-account.json", "prod-service-account.json", "my_service_account.json", "client_secret_123.apps.googleusercontent.com.json", "gcp-key.json", "api_key.json", "credentials.json", "application_default_credentials.json", "keys/x.p12", ".env", ".npmrc", "id_rsa", "spike-results/ledger.lock"]) assert.ok(ignored(f), `${f} should be ignored`);
+    for (const f of ["service-account.json", "prod-service-account.json", "my_service_account.json", "client_secret_123.apps.googleusercontent.com.json", "gcp-key.json", "api_key.json", "credentials.json", "application_default_credentials.json", "keys/x.p12", ".env", ".npmrc", "id_rsa", "spike-results/ledger.lock", "cert.pfx", "id_ecdsa", "id_ecdsa.pub", "key.json", "token.json", "sub/token.json"]) assert.ok(ignored(f), `${f} should be ignored`);
     for (const f of ["package.json", "package-lock.json", "tsconfig.json", "spike-results/ledger.json", "spike-results/xai/results.json", "spike-results/gemini/05-refusal-probe.json"]) assert.ok(!ignored(f), `${f} must stay trackable`);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

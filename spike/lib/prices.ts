@@ -28,6 +28,7 @@ export const GEMINI = {
   textThinkingOutputPerMTok: 3,
   imageOutputPerMTok: 60,
   per1KImageUsd: 0.067,
+  imageTokensPer1KImage: 1120, // pricing page: a 1K image is 1120 output tokens
   generateEstimateUsd: 0.075, // $0.067 image + headroom for thinking/text tokens
   editEstimateUsd: 0.08, // + input image tokens
   basis: `${SOURCES.geminiPricing}: $0.067 per 1K image ($60/1M image output tokens) + $0.50/1M input + $3/1M text+thinking, rounded up`,
@@ -43,9 +44,9 @@ const isCount = (v: unknown): v is number => typeof v === "number" && Number.isI
  * the token fields the price depends on, so the caller keeps the reservation (unresolved) instead of
  * settling a billed call at ~$0. Required: total_input_tokens and total_output_tokens as integers > 0;
  * total_thought_tokens, if present, an integer >= 0; and, when `imageTokensRequired` (an image came back,
- * or the response is not a recognised text-only answer; see gemini-shape.ts, Argus P2), an
- * output_tokens_by_modality entry for "image" with tokens > 0 (otherwise $60/M image tokens would be
- * priced at the $3/M text rate).
+ * or the reply fails the Amendment 1 F9 text-only test; see gemini-shape.ts isF9TextOnly, Argus P2/Q1), an
+ * output_tokens_by_modality entry for "image" (matched case-insensitively, Argus Q1) with tokens > 0
+ * (otherwise $60/M image tokens would be priced at the $3/M text rate).
  */
 export function geminiCostFromUsage(u: unknown, opts: { imageTokensRequired: boolean }): { usd: number; detail: string } | { error: string } {
   if (!u || typeof u !== "object" || Array.isArray(u)) return { error: "no usage block" };
@@ -56,7 +57,7 @@ export function geminiCostFromUsage(u: unknown, opts: { imageTokensRequired: boo
   if (g.total_thought_tokens !== undefined && !isCount(g.total_thought_tokens)) missing.push("total_thought_tokens (not a count)");
   const mods = g.output_tokens_by_modality;
   if (mods !== undefined && (!Array.isArray(mods) || mods.some((m) => !m || typeof m.modality !== "string" || !isCount(m.tokens)))) missing.push("output_tokens_by_modality (malformed)");
-  const imgOut = Array.isArray(mods) ? mods.filter((m) => m?.modality === "image" && isCount(m.tokens)).reduce((a, m) => a + (m.tokens as number), 0) : 0;
+  const imgOut = Array.isArray(mods) ? mods.filter((m) => typeof m?.modality === "string" && m.modality.toLowerCase() === "image" && isCount(m.tokens)).reduce((a, m) => a + (m.tokens as number), 0) : 0;
   if (opts.imageTokensRequired && imgOut === 0) missing.push("output_tokens_by_modality[image]");
   if (missing.length) return { error: `usage block missing/invalid: ${missing.join(", ")}` };
   const input = g.total_input_tokens as number;

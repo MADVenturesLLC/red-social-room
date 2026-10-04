@@ -9,16 +9,18 @@ export interface XaiResp { data?: XaiImage[]; model?: string; usage?: { cost_in_
 
 /**
  * Cost of one xAI call. A billed figure (usage.cost_in_usd_ticks) wins whatever the status. Without it:
- * a 200 is priced at the estimate; the one observed pre-generation rejection (422 "Failed to deserialize")
- * is $0; any other 4xx, a 429, a 5xx, a timeout or a connection error is held UNRESOLVED at the reservation.
+ * a 200 is priced at the estimate; the one observed pre-generation rejection (a non-JSON 422 body starting
+ * "Failed to deserialize the JSON body") is $0; any other 4xx, a 429, a 5xx, a timeout or a connection
+ * error is held UNRESOLVED at the reservation.
  */
 export function xaiCost(r: CallResult, estimate: number): StepCost {
   const j = r.json as XaiResp | null;
   const ticks = j?.usage?.cost_in_usd_ticks;
   if (typeof ticks === "number") return { usd: ticks / XAI.ticksPerUsd, basis: `billed: usage.cost_in_usd_ticks=${ticks} (${SOURCES.xaiCostTracking})`, billed: true };
   if (r.outcome === "ok") return { usd: estimate, basis: `estimated (no usage field returned): ${XAI.basis}`, billed: false };
-  if (r.status === 422 && /Failed to deserialize/.test(r.text)) {
-    // Observed: schema/enum validation failures come back as 422 text/plain before any generation.
+  if (r.status === 422 && r.json === null && /^Failed to deserialize the JSON body/.test(r.text)) {
+    // Observed: schema/enum validation failures come back as a 422 text/plain body that STARTS with this
+    // phrase, before any generation. A JSON body, or the phrase elsewhere in the text, is held (Argus Q3).
     return { usd: 0, basis: "estimated $0: HTTP 422 request-body deserialization error (rejected before generation, no usage field); confirm against console", billed: false };
   }
   if (r.status !== null && r.status >= 400 && r.status < 500 && r.status !== 429) {

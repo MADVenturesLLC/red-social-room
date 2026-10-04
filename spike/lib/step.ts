@@ -4,6 +4,7 @@
 import { join } from "node:path";
 import { call, dump, type CallResult, type CallSpec } from "./http.ts";
 import { Ledger, SpendRefused, type Provider } from "./ledger.ts";
+import { scrub } from "./secrets.ts";
 
 export interface StepCost { usd: number | null; basis: string; billed: boolean }
 
@@ -64,7 +65,13 @@ export async function runPaidStep<P = undefined>(opts: {
   log(`reserved $${opts.estimateUsd.toFixed(3)} for ${opts.label} (month total incl. reservation $${t.month.toFixed(3)}, spike $${t.spikeAllTime.toFixed(3)})`);
 
   const r = await (opts.doCall ?? call)(opts.spec);
-  const cost = opts.costOf(r);
+  // A cost rule that throws (e.g. on a response that breaks the provider's schema) must not lose the paid
+  // response: hold the reservation as unresolved and carry on to the dump (Argus Q2).
+  let cost: StepCost;
+  try { cost = opts.costOf(r); } catch (e) {
+    cost = { usd: null, basis: `unresolved: cost rule threw (${(e as Error)?.name ?? "Error"}: ${scrub(String((e as Error)?.message ?? e).slice(0, 200))}); reservation kept until checked against the provider console`, billed: false };
+    log(`COST RULE FAILED for ${opts.label}: ${cost.basis}`);
+  }
 
   // 1) Outputs first: the dump, then the caller's files. A failure here is held until the ledger is settled.
   const dumpPath = join(opts.outDir, `${opts.label}.json`);

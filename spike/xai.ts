@@ -42,7 +42,7 @@ function record<P>(o: StepOutcome<P>, extra: Record<string, unknown> = {}) {
     model_returned: j?.model ?? null,
     response_top_level_keys: j ? Object.keys(j) : null,
     usage: j?.usage ?? null,
-    images: (j?.data ?? []).map((d) => ({ mime_type: d.mime_type ?? null, revised_prompt: d.revised_prompt ?? null, respect_moderation: d.respect_moderation ?? null, has_b64: !!d.b64_json, url_returned: !!d.url })),
+    images: (Array.isArray(j?.data) ? j.data : []).map((d) => ({ mime_type: d?.mime_type ?? null, revised_prompt: d?.revised_prompt ?? null, respect_moderation: d?.respect_moderation ?? null, has_b64: !!d?.b64_json, url_returned: !!d?.url })),
     error_body: r && r.outcome !== "ok" ? (r.json ?? scrub(r.text.slice(0, 4000))) : null,
     stop: o.stop, stop_reason: o.stopReason ?? null,
     ledger_status: o.ledgerStatus ?? null, ledger_error: o.ledgerError ? scrub(o.ledgerError) : null,
@@ -70,7 +70,7 @@ const saveAs = (name: string) => (r: CallResult): Saved | null => {
 const outputInfo = (s: Saved | null | undefined) => (s ? (({ buf, mime, ...rest }) => rest)(s) : null);
 
 async function main() {
-  if (!hasKey("XAI_API_KEY")) { log("XAI_API_KEY not set; nothing sent."); return; }
+  if (!hasKey("XAI_API_KEY")) { log("XAI_API_KEY not set; nothing sent."); return finish("no key"); }
   // `extra` adds step-specific fields to the results.json entry. runPaidStep records the entry AFTER the
   // ledger update (step.ts), or just before rethrowing if that update fails, so after a LedgerBusy abort
   // results.json still matches the new dump (Argus N3, P3). A spend-guard refusal sets a non-zero exit (P6).

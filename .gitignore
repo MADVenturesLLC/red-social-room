@@ -7,6 +7,7 @@
 *.pem
 id_rsa*
 id_ed25519*
+id_ecdsa*
 # credential JSON files (Google service-account and OAuth client files, ADC, generic *-key.json)
 *credentials*.json
 *service-account*.json
@@ -15,6 +16,9 @@ client_secret*.json
 *-key.json
 *_key.json
 *.p12
+*.pfx
+key.json
+token.json
 node_modules/
 # transient spend-guard lock
 spike-results/ledger.lock

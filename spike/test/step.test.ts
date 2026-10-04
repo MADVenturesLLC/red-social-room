@@ -55,3 +55,22 @@ test("spend guard refusal returns before the call is made", () => inDir(async (d
     costOf: () => ({ usd: 0, basis: "x", billed: false }), doCall: async () => { called = true; return fakeOk({}); } });
   assert.equal(called, false); assert.equal(o.stop, true); assert.ok(o.refusedBySpendGuard);
 }));
+
+// ---- Argus Q2: a cost rule that throws must not lose the paid response ----
+test("Q2: costOf throws -> response still dumped, row held UNRESOLVED (not settled), no throw, results recorded", () => inDir(async (dir, l) => {
+  const logs: string[] = []; const recorded: unknown[] = [];
+  const body = { id: "v1_x", steps: [null], usage: { total_input_tokens: 26, total_output_tokens: 1549 } };
+  const o = await runPaidStep({ ledger: l, provider: "google", model: "m", label: "01-generate-3x4", outDir: dir, estimateUsd: 0.075, estimateBasis: "t", spec, log: (m) => logs.push(m),
+    costOf: () => { throw new TypeError("Cannot read properties of null (reading 'type')"); }, doCall: async () => fakeOk(body),
+    record: (x) => recorded.push(x) });
+  const dump = JSON.parse(readFileSync(join(dir, "01-generate-3x4.json"), "utf8"));
+  assert.deepEqual(dump.response.body, body, "raw response dumped");
+  assert.equal(dump.cost.usd, null);
+  assert.equal(o.ledgerStatus, "unresolved"); assert.equal(o.cost?.usd, null);
+  assert.match(o.cost?.basis ?? "", /^unresolved: cost rule threw \(TypeError: /);
+  const e = l.entries()[0];
+  assert.equal(e.status, "unresolved"); assert.equal(e.actual_usd, null);
+  assert.equal(l.totals().spikeAllTime, 0.075, "still counted at the estimate");
+  assert.equal(recorded.length, 1);
+  assert.ok(logs.some((m) => m.startsWith("COST RULE FAILED for 01-generate-3x4")));
+}));

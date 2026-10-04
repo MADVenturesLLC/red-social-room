@@ -10,7 +10,7 @@ import { Ledger } from "./lib/ledger.ts";
 import { runPaidStep, LEDGER_PATH, EXIT_SPEND_GUARD, type StepOutcome } from "./lib/step.ts";
 import { call, dump, type CallResult, type CallSpec } from "./lib/http.ts";
 import { GEMINI } from "./lib/prices.ts";
-import { geminiCost, outputImages, outputText, type Interaction } from "./lib/gemini-shape.ts";
+import { geminiCost, outputImages, outputText, stepTypes, type Interaction } from "./lib/gemini-shape.ts";
 import { saveImage, writeJson } from "./lib/save.ts";
 import { inspectImage, ratioLabel } from "./lib/image.ts";
 import { makeLogger } from "./lib/log.ts";
@@ -49,7 +49,7 @@ function record<P>(o: StepOutcome<P>, extra: Record<string, unknown> = {}) {
     attempts: r?.attempts.length ?? 0, retry_decision: r?.retry_decision ?? null,
     cost_usd: o.cost?.usd ?? null, cost_basis: o.cost?.basis ?? null, cost_billed: false,
     model_returned: j?.model ?? null, interaction_id: j?.id ?? null, interaction_status: j?.status ?? null,
-    step_types: (j?.steps ?? []).map((s) => s.type), output_text: outputText(j), usage: j?.usage ?? null,
+    step_types: stepTypes(j), output_text: outputText(j), usage: j?.usage ?? null,
     error_body: r && r.outcome !== "ok" ? (r.json ?? scrub(r.text.slice(0, 4000))) : (j?.error ?? null),
     safety_like_fields: findSafetyFields(r?.json ?? null),
     stop: o.stop, stop_reason: o.stopReason ?? null,
