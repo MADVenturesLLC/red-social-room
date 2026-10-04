@@ -161,12 +161,12 @@ Michael approved these at 10:32 PM ET:
 
 It scans the working tree (minus `node_modules`), every file under `.git` except `objects/`, every loose and packed object via `git cat-file --batch-all-objects` (parsed per object and cross-checked against `--batch-check`), and `git log --all --reflog -p --binary`. Any git failure exits 2. Findings print only the rule, location and match length. A positive and negative self-test runs first. A canary file containing synthetic key shapes was flagged (exit 1) and then removed.
 
-Output (run offline inside `unshare -rn` on the staged tree just before the Q1–Q6 commit on top of 9197775, keys loaded; the object counts are the pre-commit store, which still holds both backup commits, 47b55f0 and 9197775):
+Output (run offline inside `unshare -rn` with both keys loaded, so the exact-match layer ran, on the staged tree of the S1/S3 commit on top of c74e18d; it ran just before this output was pasted in, so the committed store has a few more objects: the final REPORT.md blob, its trees and the commit. The counts include both backup commits):
 ```
-$ node spike/check-secrets.ts   # 2026-10-04 7:39 AM ET, staged tree before the Q1–Q6 commit
+$ node spike/check-secrets.ts   # 2026-10-04 12:58 PM ET, staged tree before the S1/S3 commit
 self-test ok: 12 pattern rules fired on synthetic samples and stayed quiet on negatives; exact-match positive control ok for XAI_API_KEY,GEMINI_API_KEY
 exact-match: keys compared=XAI_API_KEY,GEMINI_API_KEY needles/key=full+base64+head12+mid12+tail12
-scanned: worktree_files=76 extra_files=0 git_meta_files=30 git_objects=161 (blob=129, tree=28, commit=4; loose=60, in_pack=101) git_log_bytes=16149620
+scanned: worktree_files=76 extra_files=0 git_meta_files=33 git_objects=186 (blob=140, tree=40, commit=6; loose=85, in_pack=101) git_log_bytes=16220052
 pattern_hits=0 exact_hits=0
 RESULT: CLEAN
 (exit 0)

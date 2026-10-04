@@ -231,6 +231,9 @@ test("Q3 xAI: a 422 JSON body, or the phrase mid-string, is held unresolved", ()
 test("R3/C11 xAI: a 422 text starting 'Failed to deserialize' but not '... the JSON body' is held unresolved; the full phrase is still $0", () => {
   NO_COST(xaiCost(resp(422, "Failed to deserialize request: prompt flagged"), 0.06), "shortened phrase");
   NO_COST(xaiCost(resp(422, "Failed to deserialize"), 0.06), "the bare shortened phrase");
+  // Argus S1: the last word "body" is part of the required phrase; cutting it must not earn $0.
+  NO_COST(xaiCost(resp(422, "Failed to deserialize the JSON payload: prompt flagged"), 0.06), "'body' replaced by 'payload'");
+  NO_COST(xaiCost(resp(422, "Failed to deserialize the JSON"), 0.06), "phrase cut before 'body'");
   const full = xaiCost(resp(422, "Failed to deserialize the JSON body into the target type: aspect_ratio: unknown variant `4:5`"), 0.06);
   assert.equal(full.usd, 0); assert.match(full.basis, /deserialization/);
 });
