@@ -3,7 +3,7 @@
 For: Michael Daley (MAD Ventures)
 From: Surface Architect
 Date: Saturday, October 3, 2026, about 11:00 PM ET
-Status: Draft. Plan only. No app code. Committed locally (not pushed) as `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` on branch `docs/plan-v1-on-8ba548c`, on top of spike commit `8ba548c` (S1, S3, S4; parent `c74e18d`); code cites below read at `c74e18d` still hold at `8ba548c`, which changes only `spike-results/REPORT.md:164-169` in place and adds `spike/test/prices.test.ts:234-236`. GitHub `main` was still `a3cba14` at 1:13 PM ET on Oct 4. No messages sent.
+Status: Draft. Plan only. No app code. On GitHub `main` since commit `2db8c08`, which added it under `docs/plan/`; GitHub `main` was `a8e98f6` at 7:44 PM ET on Wednesday, Oct 7, 2026. Code cites below were read at `c74e18d` and still hold at `8ba548c`, which changes only `spike-results/REPORT.md:164-169` in place and adds `spike/test/prices.test.ts:234-236`. P7 and P8 (section 2.2) are still pending Michael's decision. No messages sent.
 
 **Revision, Sunday, October 4, 2026, 7:20 AM ET** (Argus's Q8 in `/workspace/madc-reviews/red-social-room/precheck-p1p7-9197775.md`): item 16 now cites `spike/lib/xai-shape.ts:20-23` at `9197775`. Row F9 (and its line in the response map) now prices a no-image 200 at the token estimate only when it passes a strict text-only test; anything else falls to F15 and is held. Read at spike commit `9197775`, `spike/lib/gemini-shape.ts:20-65`.
 
