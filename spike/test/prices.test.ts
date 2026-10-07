@@ -47,7 +47,7 @@ test("N13: geminiCost holds a 200 with incomplete usage as unresolved (usd null)
 });
 
 // ---- Argus P1: every hold-unknown-cost path, one row per status class ----
-const NO_COST = (c: { usd: number | null; basis: string }, why: string) => { assert.equal(c.usd, null, why); assert.match(c.basis, /^unresolved/, why); };
+const NO_COST = (c: { usd: number | null; basis: string; billed: boolean }, why: string) => { assert.equal(c.usd, null, why); assert.match(c.basis, /^unresolved/, why); assert.equal(c.billed, false, why); };
 
 test("P1 Gemini: 4xx WITH usage, 429, 5xx, timeout and connection error are held unresolved; 4xx without usage is $0", () => {
   NO_COST(geminiCost(resp(400, { error: { code: 400 }, usage: OK_USAGE }), 0.075), "4xx with usage (tokens were reported)");
