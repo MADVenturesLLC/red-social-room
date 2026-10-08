@@ -1,6 +1,6 @@
 # MADVentures Red Social Room
 
-Act 0 spike only (see `spike-results/REPORT.md`). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
+Act 0 spike (see `spike-results/REPORT.md`) and the A1 app (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
 
 ## Requirements
 
@@ -47,3 +47,33 @@ Exit codes of `xai.ts` / `gemini.ts`: `0` finished (or stopped for a recorded re
 - Don't run two paid scripts at once: `reserve()` refuses while the ledger is locked; `settle()` waits up to ~5 s and, if still locked, writes the step's outputs and results.json entry and then stops with `LedgerBusy` (the reservation stays counted).
 - **Stale lock** (a crashed run leaves `spike-results/ledger.lock`; there is no TTL): if no spike script is running, delete `spike-results/ledger.lock`, then run `ledger-reconcile` for any row the LedgerBusy message named. `ledger-reconcile` needs the same lock, so it fails until the stale lock is gone.
 - Every load validates every ledger row (amounts present, non-negative, whole micro-USD; known status/provider; `YYYY-MM` month; `spike: true`). A bad row stops everything with `LedgerCorrupt`; restore the file from git rather than editing it by hand.
+
+## A1 app (Next.js + SQLite + Grok)
+
+TECH-PLAN-v1.md section 9 A1, as amended by Amendment 1 section 4: prompt -> Grok image -> Save to library -> search by prompt text, with the spend guard (one shared monthly cap, default $50), the real-person name-list check, and keys kept on the server.
+
+- Code: `src/server/` (DB, ledger, key store, prompt check, xAI adapter), `src/app/` (pages and API routes). Reuses `spike/lib/xai-shape.ts` (cost rule), `spike/lib/ledger.ts` (micro-USD rounding, New York month), `spike/lib/image.ts`.
+- Config (no code change needed): `config/switches.json` (pending Founder decisions P1/P4/P5/P6/P7; a value A1 doesn't build stops startup), `config/prices.json` (pre-call estimates), `config/real-person-names.txt` (one name per line; an empty or missing list blocks every prompt).
+- Data (`RSR_DATA_DIR`, default `./data`, `/data` in Docker): `db/rsr.sqlite` (WAL, FTS5), `images/<aa>/<sha256>.<ext>`, `secrets/xai_api_key` (mode 600, only if saved from Settings). On first start the 10 spike rows from `spike-results/ledger.json` are imported into the spend ledger.
+
+### Run it locally (no Docker)
+
+```
+export PATH=/home/box/node22/bin:$PATH   # Node >= 22.18
+npm ci
+npm run build && npm start               # http://localhost:3000; key from XAI_API_KEY or the Settings page
+npm test                                 # spike + app unit tests (no network, dummy keys)
+npm run test:e2e                         # next build + next start against a local fake xAI; key-leak scan
+```
+
+### Run it with Docker Compose + Tailscale Serve (untested on the build box: no Docker or Tailscale there)
+
+```
+cp .env.example .env && chmod 600 .env   # put XAI_API_KEY=... in it, or leave it empty and use Settings
+mkdir -p data                            # on Linux, if the container can't write it: sudo chown 1000:1000 data
+docker compose up -d --build             # listens on 127.0.0.1:3000 only
+tailscale serve --bg --https=443 http://127.0.0.1:3000
+tailscale serve status                   # shows https://<machine>.<tailnet>.ts.net/
+```
+
+Open the `https://<machine>.<tailnet>.ts.net/` URL on the phone (signed in to the same tailnet). To stop sharing: `tailscale serve --https=443 off`. The app has no login of its own; Tailscale is the only way in, and the compose file binds to 127.0.0.1 so it is not reachable on the LAN.

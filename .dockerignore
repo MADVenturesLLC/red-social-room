@@ -1,0 +1,12 @@
+# Never send secrets or local state into the image build.
+.env
+.env.*
+.envrc
+data/
+node_modules/
+.next/
+.git/
+*.tsbuildinfo
+spike-results/xai/
+spike-results/gemini/
+spike-results/preflight/
