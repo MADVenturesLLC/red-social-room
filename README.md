@@ -57,6 +57,8 @@ TECH-PLAN-v1.md section 9 A1, as amended by Amendment 1 section 4: prompt -> Gro
 - Config (no code change needed): `config/switches.json` (pending Founder decisions P1/P4/P5/P6/P7; a value A1 doesn't build stops startup), `config/prices.json` (pre-call estimates), `config/real-person-names.txt` (one name per line; an empty or missing list blocks every prompt).
 - Data (`RSR_DATA_DIR`, default `./data`, `/data` in Docker): `db/rsr.sqlite` (WAL, FTS5), `images/<aa>/<sha256>.<ext>`, `secrets/xai_api_key` (mode 600, only if saved from Settings). On first start the 10 spike rows from `spike-results/ledger.json` and the one billed A1 live smoke call (`src/server/seed/a1-live-smoke.json`, $0.04, xAI request `cb478eea-cf55-96df-bc20-38346f7f013b`) are imported into the spend ledger in one transaction, so October starts at $0.5947 counted.
 
+One server per data directory: at start the app takes `<data>/rsr.lock` (holding its pid; removed on exit, and replaced if that pid is no longer running). A second server pointed at the same directory exits with `refusing to start: Another Red Social Room server (pid N) is already using the data directory ...`. At start, ledger rows still `reserved` from a server that stopped mid-call are listed as unresolved ("interrupted"); a call that finishes after its row has left `reserved` is kept as a `late_result` event instead of an error.
+
 ### Run it locally (no Docker)
 
 ```
@@ -87,4 +89,4 @@ Every page, API route and asset first checks the `Host` header (DNS-rebinding gu
 RSR_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net
 ```
 
-A missing, empty or unlisted `Host` gets `403 {"error":"Host not allowed."}` and nothing runs. `X-Forwarded-Host` is ignored. Which `Host` `tailscale serve` passes through is UNVERIFIED (pin 17): if the phone gets that 403, add the `ts.net` name above and restart.
+An empty or unlisted `Host` gets `403 {"error":"Host not allowed."}` and nothing runs; a request with no `Host` line at all gets Node's own `400` before the app runs (the pin allows either). `X-Forwarded-Host` is ignored. Which `Host` `tailscale serve` passes through is UNVERIFIED (pin 17): if the phone gets that 403, add the `ts.net` name above and restart.

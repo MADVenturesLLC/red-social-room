@@ -87,7 +87,7 @@ export function settle(db: DB, id: string, s: SettleInput): void {
   if (!Number.isSafeInteger(s.actualMicros) || s.actualMicros < 0) throw new RangeError(`actual cost for ${id} must be whole micro-USD >= 0`);
   const r = db.prepare(`UPDATE spend_ledger SET status = 'settled', actual_micro_usd = ?, cost_source = ?, cost_detail = ?, provider_request_id = ?, provider_trace = ?, http_status = ?, outcome = ?, settled_at = ?, note = ? WHERE id = ? AND status = 'reserved'`)
     .run(s.actualMicros, s.costSource, s.costDetail ?? null, s.providerRequestId ?? null, s.providerTrace ?? null, s.httpStatus, s.outcome, isoNY(), s.note ?? null, id);
-  if (Number(r.changes) !== 1) throw new Error(`ledger row ${id} is not in state reserved; not settled`);
+  if (Number(r.changes) !== 1) throw new RowNotReserved(db, id, "not settled");
   if (s.costSource === "billed_provider") notePriceDrift(db, id);
 }
 
@@ -127,12 +127,51 @@ export function priceDrifts(db: DB, limit = 20): PriceDrift[] {
 export function markUnresolved(db: DB, id: string, s: { reason: string; providerRequestId?: string | null; providerTrace?: string | null; httpStatus: number | null; outcome: string; note?: string | null }): void {
   const r = db.prepare(`UPDATE spend_ledger SET status = 'unresolved', cost_detail = ?, provider_request_id = ?, provider_trace = ?, http_status = ?, outcome = ?, note = ? WHERE id = ? AND status = 'reserved'`)
     .run(JSON.stringify({ reason: s.reason }), s.providerRequestId ?? null, s.providerTrace ?? null, s.httpStatus, s.outcome, s.note ?? null, id);
-  if (Number(r.changes) !== 1) throw new Error(`ledger row ${id} is not in state reserved; not marked unresolved`);
+  if (Number(r.changes) !== 1) throw new RowNotReserved(db, id, "not marked unresolved");
+}
+
+/** settle()/markUnresolved() found the row already out of `reserved` (Argus L1 on f63676e: for example a startup
+ *  sweep marked it interrupted). The row is left as it is; the caller records the late result instead. */
+export class RowNotReserved extends Error {
+  readonly id: string;
+  readonly rowStatus: string | null;
+  constructor(db: DB, id: string, what: string) {
+    const row = db.prepare("SELECT status FROM spend_ledger WHERE id = ?").get(id) as { status: string } | undefined;
+    super(`ledger row ${id} is not in state reserved (${row?.status ?? "missing"}); ${what}`);
+    this.name = "RowNotReserved";
+    this.id = id;
+    this.rowStatus = row?.status ?? null;
+  }
+}
+
+export interface LateResult {
+  httpStatus: number | null; outcome: string; providerRequestId: string | null; providerTrace: string | null;
+  actualMicros: number | null; costSource: string | null; reason: string; note: string | null;
+}
+
+/**
+ * Argus L1 on f63676e: a call came back after its row had already left `reserved`. The real outcome (status,
+ * provider request id, bill) goes into a `late_result` event so reconciling still has it; the ledger row is not
+ * touched, so the cap keeps counting it exactly as it stands (an unresolved row at its full estimate, a settled row
+ * at its settled amount). Returns what the row counts now.
+ */
+export function recordLateResult(db: DB, id: string, r: LateResult): { status: string | null; countedMicros: number; actualMicros: number | null; costSource: string | null } {
+  const row = db.prepare("SELECT status, outcome, estimate_micro_usd AS est, actual_micro_usd AS act, cost_source FROM spend_ledger WHERE id = ?").get(id) as
+    { status: string; outcome: string | null; est: number; act: number | null; cost_source: string | null } | undefined;
+  db.prepare("INSERT INTO events (created_at, kind, detail) VALUES (?, 'late_result', ?)").run(isoNY(), JSON.stringify({
+    ledger_id: id, row_status: row?.status ?? null, row_outcome: row?.outcome ?? null,
+    http_status: r.httpStatus, outcome: r.outcome, provider_request_id: r.providerRequestId, provider_trace: r.providerTrace,
+    actual_micro_usd: r.actualMicros, cost_source: r.costSource, reason: r.reason, note: r.note,
+  }));
+  if (!row) return { status: null, countedMicros: 0, actualMicros: null, costSource: null };
+  const settled = row.status === "settled";
+  return { status: row.status, countedMicros: settled ? Number(row.act) : Number(row.est), actualMicros: settled ? Number(row.act) : null, costSource: settled ? row.cost_source : null };
 }
 
 /**
  * Argus L2 on fa3d359: a row still `reserved` when the app starts belongs to a call that was in flight when the
- * process stopped (one process; nothing else writes the ledger). Mark each `unresolved` ("interrupted") so it shows
+ * process stopped. Only one server runs per data directory (the lock in lock.ts, Argus L1 on f63676e), so no live
+ * call can be swept. Mark each `unresolved` ("interrupted") so it shows
  * in Settings -> Unresolved for reconciling; its estimate keeps counting against the cap either way.
  */
 export function markInterrupted(db: DB): number {

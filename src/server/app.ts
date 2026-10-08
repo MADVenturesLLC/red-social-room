@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { dataDir, loadSwitches, REPO_ROOT } from "./config.ts";
 import { openDb } from "./db.ts";
 import { markInterrupted } from "./ledger.ts";
+import { acquireDataDirLock, DataDirLocked } from "./lock.ts";
 import { KeyStore } from "./keys.ts";
 import { loadPrices } from "./prices.ts";
 import { nameListMethod } from "./prompt-check.ts";
@@ -24,6 +25,8 @@ export function getApp(): AppDeps {
   const g = globalThis as G;
   if (g.__rsrApp) return g.__rsrApp;
   const dir = dataDir();
+  // Argus L1 on f63676e: one server per data directory, taken before the database is opened or swept.
+  acquireDataDirLock(dir);
   const keys = new KeyStore({ secretsDir: join(dir, "secrets") });
   const keyCheck: KeyCheckCache = { fingerprint: null, ok: false, versionListing: null };
   const app: AppDeps = {
@@ -46,4 +49,19 @@ export function getApp(): AppDeps {
   // Free key check at app start (Amendment 1 item 19). Not awaited; failures show on the card and in Settings.
   if (keys.status().set) void checkKey(app).catch(() => undefined);
   return app;
+}
+
+/**
+ * Server start (src/instrumentation.ts): open the app right away so the data-directory lock is taken, and the
+ * startup sweep runs, before any request. A second server on the same data directory exits with a clear error.
+ */
+export function startApp(exit: (code: number) => void = (c) => process.exit(c)): AppDeps | null {
+  try {
+    return getApp();
+  } catch (e) {
+    if (!(e instanceof DataDirLocked)) throw e;
+    console.error(`[rsr] refusing to start: ${e.message}`);
+    exit(1);
+    return null;
+  }
 }

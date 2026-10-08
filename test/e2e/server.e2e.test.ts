@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { connect } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,11 @@ const GEMINI_DUMMY = "dummyg_TESTONLY_4zxmPjPWZezkrrbewFcerUGlX2tQCAOIkSoD1AiaLJ
 const NEEDLES = [...secretNeedles(DUMMY_KEY), ...secretNeedles(OTHER), ...secretNeedles(GEMINI_DUMMY)];
 const NEXT_BIN = join(REPO_ROOT, "node_modules", "next", "dist", "bin", "next");
 
-let mock: Server, server: ChildProcess, base = "", dataDir = "", port = 0;
+let mock: Server, server: ChildProcess, base = "", dataDir = "", port = 0, startEnv: NodeJS.ProcessEnv = {};
+// A prompt containing "slow-call" makes the mock hold its answer until releaseSlow() (the Argus L1 lock test).
+let releaseSlow: () => void = () => undefined, slowSeen: () => void = () => undefined;
+const slowArrived = new Promise<void>((r) => { slowSeen = r; });
+const slowGate = new Promise<void>((r) => { releaseSlow = r; });
 // A1 pin 17, line 368: set only when the server STARTS (not at build), to prove it is read at runtime.
 const ALLOWED_HOSTS_ENV = "  Phone.Tailnet-Example.ts.net , other.example ";
 
@@ -41,6 +46,20 @@ function rawSocket(lines: string): Promise<string> {
     let out = ""; s.setEncoding("utf8"); s.on("data", (c) => { out += c; }); s.on("end", () => resolve(out)); s.on("error", reject);
     setTimeout(() => s.end(), 2000);
   });
+}
+/** The body of a raw HTTP/1.1 response, chunked transfer decoded. */
+function rawBody(resp: string): string {
+  const at = resp.indexOf("\r\n\r\n");
+  const head = resp.slice(0, at), rest = resp.slice(at + 4);
+  if (!/^transfer-encoding:\s*chunked/im.test(head)) return rest;
+  let out = "", i = 0;
+  for (;;) {
+    const nl = rest.indexOf("\r\n", i);
+    const n = parseInt(rest.slice(i, nl), 16);
+    if (!n) return out;
+    out += rest.slice(nl + 2, nl + 2 + n);
+    i = nl + 2 + n + 2;
+  }
 }
 const mockSeen: Array<{ path: string; auth: string | undefined }> = [];
 const transcript: Array<{ what: string; text: string }> = [];
@@ -72,6 +91,7 @@ before(async () => {
       if (req.url === "/v1/api-key") return res.end(JSON.stringify({ api_key_blocked: false, api_key_disabled: false, team_blocked: false }));
       if (req.url === "/v1/image-generation-models") return res.end(JSON.stringify({ models: [{ id: "grok-imagine-image-2.0", version: "1.0", fingerprint: "fp_e2e" }] }));
       if (req.url === "/v1/images/generations" && req.method === "POST") {
+        if (body.includes("slow-call")) { slowSeen(); void slowGate.then(() => { res.setHeader("x-request-id", "req-e2e-slow"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 400000000 } })); }); return; }
         res.setHeader("x-request-id", "req-e2e");
         return res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: body.includes("medium-bill") ? 600000000 : 400000000 } }));
       }
@@ -89,7 +109,8 @@ before(async () => {
   assert.equal(b.status, 0, `next build failed:\n${b.stdout}\n${b.stderr}`);
   port = 4300 + Math.floor(Math.random() * 500);
   base = `http://127.0.0.1:${port}`;
-  server = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(port), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env: { ...env, RSR_ALLOWED_HOSTS: ALLOWED_HOSTS_ENV }, stdio: ["ignore", "pipe", "pipe"] });
+  startEnv = { ...env, RSR_ALLOWED_HOSTS: ALLOWED_HOSTS_ENV };
+  server = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(port), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env: startEnv, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.on("data", (c) => { serverLog += c; });
   server.stderr?.on("data", (c) => { serverLog += c; });
   for (let i = 0; i < 100; i++) {
@@ -203,14 +224,64 @@ test("A1 pin 17, line 368: a name from RSR_ALLOWED_HOSTS (set only at start, not
   assert.equal(s.status, 200);
 });
 
-test("A1 pin 17, line 368: an empty Host gets the 403; a request with no Host line at all never reaches the app", async () => {
+test("A1 pin 17, line 368: an empty Host gets 403 with the fixed body; a request with no Host line at all may instead get Node's own 400 - either way no page, provider call or ledger row", async () => {
+  const counted = JSON.parse(await (await fetch(`${base}/api/status`)).text()).totals.countedMicros;
+  const mocks = mockSeen.length;
   const empty = await rawSocket("GET /settings HTTP/1.1\r\nHost: \r\nConnection: close\r\n\r\n");
-  assert.match(empty, /^HTTP\/1\.1 (403|400) /);
-  assert.doesNotMatch(empty, /<h1>Settings<\/h1>/);
+  assert.match(empty, /^HTTP\/1\.1 403 /);
+  assert.equal(rawBody(empty), HOST_REFUSED_BODY);
+  // HTTP/1.1 with no Host line: Node's HTTP server answers 400 before the app runs (the pin allows this).
   const none = await rawSocket("GET /settings HTTP/1.1\r\nConnection: close\r\n\r\n");
-  assert.match(none, /^HTTP\/1\.1 (403|400) /);
+  assert.match(none, /^HTTP\/1\.1 400 /);
   assert.doesNotMatch(none, /<h1>Settings<\/h1>/);
+  const body = JSON.stringify({ prompt: "no host line at all", ratio: "1:1" });
+  const nonePost = await rawSocket(`POST /api/generate HTTP/1.1\r\nContent-Type: application/json\r\nx-rsr: 1\r\nsec-fetch-site: same-origin\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+  assert.match(nonePost, /^HTTP\/1\.1 400 /);
+  // HTTP/1.0 allows a request without Host; Node lets it through, and the app's own check refuses it with the 403.
+  const old = await rawSocket("GET /settings HTTP/1.0\r\n\r\n");
+  assert.match(old, /^HTTP\/1\.1 403 /);
+  assert.equal(rawBody(old), HOST_REFUSED_BODY);
+  assert.equal(mockSeen.length, mocks, "no provider request");
+  assert.equal(JSON.parse(await (await fetch(`${base}/api/status`)).text()).totals.countedMicros, counted, "no ledger change");
   emptyHostStatus = empty.slice(9, 12); missingHostStatus = none.slice(9, 12);
+});
+
+test("Argus L1 on f63676e: a second server on the same data directory refuses to start with a clear error and sweeps nothing; the first server's in-flight call settles normally", async () => {
+  const dbPath = join(dataDir, "db", "rsr.sqlite");
+  const rowsOf = (id?: string) => {
+    const db = new DatabaseSync(dbPath);
+    try { return db.prepare("SELECT id, status, outcome, provider_request_id FROM spend_ledger WHERE provider_request_id IS ? OR status = 'reserved'").all(id ?? null) as Array<Record<string, unknown>>; } finally { db.close(); }
+  };
+  const lock = readFileSync(join(dataDir, "rsr.lock"), "utf8").trim();
+  assert.equal(lock, String(server.pid), "the first server holds the data-directory lock");
+  const inFlight = post("/api/generate", { prompt: "slow-call: a lighthouse at dusk", ratio: "1:1" });
+  await slowArrived;
+  const reservedBefore = rowsOf().filter((r) => r.status === "reserved");
+  assert.equal(reservedBefore.length, 1, "the slow call's row is reserved while xAI holds the answer");
+
+  const port2 = port + 600;
+  const second = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(port2), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env: startEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  second.stdout?.on("data", (c) => { out += c; }); second.stderr?.on("data", (c) => { out += c; });
+  const exited = new Promise<number | null>((r) => second.on("exit", (code) => r(code)));
+  let code: number | null | undefined;
+  for (let i = 0; i < 150 && code === undefined; i++) {
+    code = await Promise.race([exited, new Promise<undefined>((r) => setTimeout(() => r(undefined), 200))]);
+    if (code === undefined) { try { await fetch(`http://127.0.0.1:${port2}/api/status`); } catch { /* not up, or already gone */ } }
+  }
+  if (code === undefined) second.kill("SIGKILL");
+  assert.equal(code, 1, `the second server must exit 1:\n${out}`);
+  assert.match(out, /refusing to start: Another Red Social Room server \(pid \d+\) is already using the data directory /);
+  const stillReserved = rowsOf().filter((r) => r.status === "reserved");
+  assert.deepEqual(stillReserved.map((r) => r.id), reservedBefore.map((r) => r.id), "no sweep: the live row is still reserved");
+  assert.equal(readFileSync(join(dataDir, "rsr.lock"), "utf8").trim(), String(server.pid), "the lock still belongs to the first server");
+
+  releaseSlow();
+  const g = JSON.parse(await (await inFlight).text());
+  assert.equal(g.status, "ok", JSON.stringify(g));
+  const [row] = rowsOf("req-e2e-slow");
+  assert.equal(row.status, "settled");
+  assert.equal(row.id, reservedBefore[0].id);
 });
 let emptyHostStatus = "", missingHostStatus = "";
 after(() => { console.log(`# host probe: empty Host -> ${emptyHostStatus}, missing Host -> ${missingHostStatus}`); });

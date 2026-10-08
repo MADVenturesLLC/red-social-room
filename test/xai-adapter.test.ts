@@ -2,8 +2,9 @@
 // line 272 A1 defaults; Surface room note 2026-10-07). No network, dummy key only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generate } from "../src/server/xai/adapter.ts";
-import { monthTotals } from "../src/server/ledger.ts";
+import { generate, QUOTA_429_RE } from "../src/server/xai/adapter.ts";
+import { markInterrupted, monthTotals } from "../src/server/ledger.ts";
+import type { DB } from "../src/server/db.ts";
 import { appStatus } from "../src/server/status.ts";
 import { loadPrices } from "../src/server/prices.ts";
 import { makeApp, fakeXai, genOk, jsonRes, hang, netError, ledgerRows, DUMMY_KEY, secretNeedles, KEY_OK } from "./helpers.ts";
@@ -388,6 +389,28 @@ for (const body of ["QUOTA exceeded for this team", "Spending Limit reached", "B
   }, { gen: [text(429, body)] }));
 }
 
+// A1 pin 15, line 366 (at 0e1d324): "quota, billing, credit or credits, spending limit, insufficient funds, balance or
+// payment, each word or phrase matched on its own (so "balance" alone matches)". Each body below holds exactly one
+// listed term; with that term taken out the body matches nothing, so each term is proven to match alone.
+for (const [term, body] of [
+  ["quota", "quota reached"], ["billing", "billing problem"], ["credit", "No credit left on this team"], ["credits", "out of credits"],
+  ["spending limit", "Spending limit reached"], ["insufficient funds", "insufficient funds"], ["balance", "Your balance is too low"], ["payment", "payment required"],
+] as const) {
+  test(`A1 pin 15, line 366: '${term}' on its own marks a 429 as quota ('${body}') -> F8, no retry, key re-checked`, withApp(async (t, x) => {
+    assert.equal(QUOTA_429_RE.test(body.replace(new RegExp(term, "i"), "")), false, "no other listed term in the body");
+    const out = await run(t);
+    assert.equal(out.kind === "error" && out.code, "quota");
+    assert.equal(x.posts().length, 1);
+    assert.deepEqual(t.sleeps, []);
+    await run(t);
+    assert.equal(x.requests.filter((r) => r.path === "/v1/api-key").length, 2, "the key check re-ran before the next paid call");
+  }, { gen: [text(429, body), () => genOk()] }));
+}
+
+test("A1 pin 15, line 366: a 429 with none of the listed words is a rate limit (F4), not quota", () => {
+  for (const b of ["slow down", "Too many requests", "rate limit exceeded, retry later", "creditor"]) assert.equal(QUOTA_429_RE.test(b), false, b);
+});
+
 test("A1 pin 15, line 366: a 429 body longer than 500 characters stores exactly the first 500 (code points, emoji at the cut kept whole)", withApp(async (t) => {
   const body = "r".repeat(499) + "\u{1F600}" + "s".repeat(300);
   await run(t);
@@ -464,6 +487,56 @@ test("Argus L2: a valid large bill (1e12 ticks = $100, the ceiling) still settle
   const [row] = ledgerRows(t.app);
   assert.equal(row.status, "settled"); assert.equal(row.actual_micro_usd, 100_000_000);
 }, { gen: [() => genOk(1_000_000_000_000)], capUsd: 1000 }));
+
+test("Argus L2 on f63676e: one tick over the ceiling (1e12 + 1) is held unresolved with a note, not settled", withApp(async (t) => {
+  const out = await run(t);
+  assert.equal(out.kind, "ok");
+  const [row] = ledgerRows(t.app);
+  assert.equal(row.status, "unresolved"); assert.equal(row.actual_micro_usd, null);
+  assert.match(String(row.note), /^invalid usage\.cost_in_usd_ticks: 1000000000001 /);
+  assert.equal(monthTotals(t.app.db).countedMicros, 40000);
+}, { gen: [() => genOk(1_000_000_000_001)], capUsd: 1000 }));
+
+test("Argus L2 on f63676e: if settle itself throws (the ledger refuses the update), the row ends unresolved and keeps counting; no 500", withApp(async (t) => {
+  t.app.db.exec("CREATE TEMP TRIGGER test_refuse_settle BEFORE UPDATE OF status ON spend_ledger WHEN NEW.status = 'settled' BEGIN SELECT RAISE(ABORT, 'test: settle refused'); END");
+  const out = await run(t);
+  assert.equal(out.kind, "ok", "the image is still delivered");
+  assert.deepEqual(out.kind === "ok" && out.cost, { micros: null, source: "unresolved", heldMicros: 40000 });
+  const [row] = ledgerRows(t.app);
+  assert.equal(row.status, "unresolved");
+  assert.match(String(row.cost_detail), /settling failed \(Error: test: settle refused\)/);
+  assert.equal(monthTotals(t.app.db).countedMicros, 40000);
+}));
+
+// Argus L1 on f63676e: a call whose row left `reserved` while it was out (here: swept as interrupted mid-call).
+let sweepDb: DB | null = null;
+const sweepThen = (h: Handler): Handler => async (req, init) => { assert.equal(markInterrupted(sweepDb!), 1); return h(req, init); };
+const lateEvents = (t: ReturnType<typeof makeApp>) => (t.app.db.prepare("SELECT detail FROM events WHERE kind = 'late_result'").all() as Array<{ detail: string }>).map((e) => JSON.parse(e.detail));
+
+test("Argus L1 on f63676e: a bill that arrives after the row was swept is kept as a late_result event (request id, $0.04); the image is delivered, no 500, the row still counts its estimate", withApp(async (t) => {
+  sweepDb = t.app.db;
+  const out = await run(t);
+  assert.equal(out.kind, "ok");
+  assert.deepEqual(out.kind === "ok" && out.cost, { micros: null, source: "unresolved", heldMicros: 40000 });
+  const [row] = ledgerRows(t.app);
+  assert.equal(row.status, "unresolved"); assert.equal(row.outcome, "interrupted");
+  const [ev] = lateEvents(t);
+  assert.equal(ev.ledger_id, row.id); assert.equal(ev.row_status, "unresolved"); assert.equal(ev.row_outcome, "interrupted");
+  assert.equal(ev.provider_request_id, "req-test-1"); assert.equal(ev.http_status, 200); assert.equal(ev.outcome, "ok");
+  assert.equal(ev.actual_micro_usd, 40000); assert.equal(ev.cost_source, "billed_provider");
+  assert.equal(monthTotals(t.app.db).countedMicros, 40000);
+  assert.ok(t.logs.some((l) => /late result: row was already unresolved/.test(l)));
+}, { gen: [sweepThen(() => genOk())] }));
+
+test("Argus L1 on f63676e: an unknown-cost result (500) after the row was swept is kept as a late_result event; the user gets the normal error, the row still counts its estimate", withApp(async (t) => {
+  sweepDb = t.app.db;
+  const out = await run(t);
+  assert.equal(out.kind, "error");
+  const [ev] = lateEvents(t);
+  assert.equal(ev.http_status, 500); assert.equal(ev.actual_micro_usd, null); assert.equal(ev.cost_source, null);
+  assert.equal(ledgerRows(t.app).length, 1, "no retry row was added past the swept one");
+  assert.equal(monthTotals(t.app.db).countedMicros, 40000);
+}, { gen: [sweepThen(text(500, "{\"error\":\"internal\"}", "application/json"))] }));
 
 const OTHER_KEY = "dummy_TESTONLY3_oNAtfjvv5ih0HYWRRuWU8LBitF9rMInFMku3I8KH641Xs4qM";
 test("A1 pin 10, line 361 (Argus L6): a key change re-runs the key check even without a forced check (fingerprint guard on the cache)", withApp(async (t, x) => {

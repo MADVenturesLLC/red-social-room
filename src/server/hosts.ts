@@ -1,8 +1,10 @@
-// A1 pin 17, line 368 (Amendment 1 at 6812c2d): every route, GET and POST alike, checks the Host header before
-// anything else (DNS-rebinding guard; Argus M2 on fa3d359). The host name is compared without its port and
-// without regard to case. Allowed by default: localhost, 127.0.0.1, [::1]; RSR_ALLOWED_HOSTS adds more names,
-// comma-separated, spaces trimmed. Missing, empty or unlisted Host -> 403 with a fixed JSON body that does not
-// echo the header. X-Forwarded-Host is never read. No Node-only imports: this runs inside src/proxy.ts too.
+// A1 pin 17, line 368 (Amendment 1 at 0e1d324): every request - pages, API routes, static files - checks the Host
+// header before anything else (DNS-rebinding guard; Argus M2 on fa3d359). The host name is compared without its
+// port and without regard to case. Allowed by default: localhost, 127.0.0.1, [::1]; RSR_ALLOWED_HOSTS adds more
+// names, comma-separated, spaces trimmed. An empty or unlisted Host (or a missing one that reaches the app, as
+// HTTP/1.0 allows) -> 403 with a fixed JSON body that does not echo the header. An HTTP/1.1 request with no Host
+// line gets Node's own 400 before the app runs, which the pin allows. X-Forwarded-Host is never read.
+// No Node-only imports: this runs inside src/proxy.ts too.
 
 export const DEFAULT_ALLOWED_HOSTS: readonly string[] = Object.freeze(["localhost", "127.0.0.1", "[::1]"]);
 export const HOST_REFUSED_BODY = JSON.stringify({ error: "Host not allowed." });

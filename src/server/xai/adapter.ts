@@ -8,7 +8,7 @@ import type { XaiResp } from "../../../spike/lib/xai-shape.ts";
 import type { StepCost } from "../../../spike/lib/step.ts";
 import { toMicros } from "../../../spike/lib/ledger.ts";
 import { attemptOnce, parseRetryAfter, CLOUD_TIMEOUT_MS, type AttemptResult, type FetchLike } from "./http.ts";
-import { CapRefused, markUnresolved, reserve, settle, fmtUsd, type CostSource } from "../ledger.ts";
+import { CapRefused, markUnresolved, recordLateResult, reserve, RowNotReserved, settle, fmtUsd, type CostSource } from "../ledger.ts";
 import { estimate, type PriceRow } from "../prices.ts";
 import { qualityFor, resolutionFor, type Switches } from "../config.ts";
 import type { KeyStore } from "../keys.ts";
@@ -123,8 +123,10 @@ async function checkKeyInner(d: XaiDeps, opts: { force?: boolean }): Promise<Key
   return { ok: true, versionListing };
 }
 
-/** Words that mark an xAI 429 as a quota/billing problem rather than a rate limit (interim; xAI documents no shape). */
-export const QUOTA_429_RE = /quota|billing|credits?\b|spending[ _-]?limit|insufficient[ _-]?(funds|balance)|payment/i;
+/** Words that mark an xAI 429 as a quota/billing problem rather than a rate limit (xAI documents no shape).
+ *  A1 pin 15, line 366: quota, billing, credit or credits, spending limit, insufficient funds, balance, payment -
+ *  each matched on its own and without regard to case. */
+export const QUOTA_429_RE = /quota|billing|credits?\b|spending[ _-]?limit|insufficient[ _-]?funds|balance|payment/i;
 
 export function invalidateKeyCheck(d: XaiDeps): void { d.keyCheck.ok = false; }
 
@@ -219,9 +221,22 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
     if (d.switches.xaiDataRetention === "zdr") log(`xai x-zero-data-retention=${r.headers["x-zero-data-retention"] ?? "(absent)"}`);
     if (r.headers["x-ratelimit-remaining-requests"]) log(`xai rate-limit remaining=${r.headers["x-ratelimit-remaining-requests"]} limit=${r.headers["x-ratelimit-limit-requests"] ?? "?"}`);
 
+    // Argus L1 on f63676e: the row left `reserved` while this call was out (e.g. swept as interrupted). Record the
+    // real result as a `late_result` event instead of failing the request; the row keeps counting as it stands.
+    const late = (e: unknown, x: { httpStatus: number | null; outcome: string; actualMicros: number | null; costSource: string | null; reason: string; note: string | null }): CostInfo => {
+      if (!(e instanceof RowNotReserved)) throw e;
+      const now = recordLateResult(d.db, id, { ...x, providerRequestId, providerTrace: trace });
+      log(`xai generate gen=${req.generationId} ref=${id} attempt=${attempt} late result: row was already ${now.status ?? "missing"}; recorded as a late_result event`);
+      return now.status === "settled" ? { micros: now.actualMicros, source: (now.costSource ?? "unresolved") as CostInfo["source"], heldMicros: 0 } : { micros: null, source: "unresolved", heldMicros: now.countedMicros };
+    };
+
     // F2: no connection was ever made -> nothing billed; release at $0 and retry once.
     if (r.noConnection) {
-      settle(d.db, id, { actualMicros: 0, costSource: "not_sent", costDetail: JSON.stringify({ error: r.errorCode }), httpStatus: null, outcome: "no_connection" });
+      try {
+        settle(d.db, id, { actualMicros: 0, costSource: "not_sent", costDetail: JSON.stringify({ error: r.errorCode }), httpStatus: null, outcome: "no_connection" });
+      } catch (e) {
+        late(e, { httpStatus: null, outcome: "no_connection", actualMicros: 0, costSource: "not_sent", reason: `no connection (${r.errorCode ?? "unknown"})`, note: null });
+      }
       attempts.push({ clientRequestId: id, status: null, outcome: "no_connection", costMicros: 0, costSource: "not_sent" });
       log(`xai generate gen=${req.generationId} ref=${id} attempt=${attempt} no connection (${r.errorCode})`);
       if (!retriedConnection && attempt < MAX_ATTEMPTS) { retriedConnection = true; continue; }
@@ -243,20 +258,27 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
     const badTicks = ticksProblem(r.json);
     const note = r.status === 429 ? bodyNote(r.text, d.keys) : badTicks;
     const hold = (reason: string): CostInfo => {
-      markUnresolved(d.db, id, { reason, providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome, note });
+      try {
+        markUnresolved(d.db, id, { reason, providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome, note });
+      } catch (e) {
+        return late(e, { httpStatus: r.status, outcome: r.outcome, actualMicros: null, costSource: null, reason, note });
+      }
       return { micros: null, source: "unresolved", heldMicros: est.micros };
     };
     let costInfo: CostInfo;
     if (cost.usd === null) costInfo = hold(cost.basis);
     else {
       // A settle that throws (e.g. an amount the ledger refuses) must not leave the row stuck as `reserved`.
+      let micros: number | null = null, src: CostSource | null = null;
       try {
-        const micros = toMicros(cost.usd);
-        const src = costSourceOf(cost);
+        micros = toMicros(cost.usd);
+        src = costSourceOf(cost);
         settle(d.db, id, { actualMicros: micros, costSource: src, costDetail: JSON.stringify({ basis: cost.basis, ticks: j?.usage?.cost_in_usd_ticks ?? null }), providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome, note });
         costInfo = { micros, source: src, heldMicros: 0 };
       } catch (e) {
-        costInfo = hold(`unresolved: settling failed (${(e as Error).name}: ${(e as Error).message.slice(0, 200)}); reservation kept`);
+        costInfo = e instanceof RowNotReserved
+          ? late(e, { httpStatus: r.status, outcome: r.outcome, actualMicros: micros, costSource: src, reason: cost.basis, note })
+          : hold(`unresolved: settling failed (${(e as Error).name}: ${(e as Error).message.slice(0, 200)}); reservation kept`);
       }
     }
     attempts.push({ clientRequestId: id, status: r.status, outcome: r.outcome, costMicros: costInfo.micros, costSource: costInfo.source });
