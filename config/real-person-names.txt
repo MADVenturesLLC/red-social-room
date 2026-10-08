@@ -1,0 +1,6 @@
+# Real-person names the prompt check blocks (Founder decision 7 / Amendment 1 D1; detection method P1a
+# is pending, so A1 ships the name-list method and fails closed, Amendment 1 section 4 line 278).
+# One name per line. Matching is case-insensitive on whole words. Lines starting with # are ignored.
+# An empty or missing list means the check cannot run, so every prompt is blocked until names are added.
+# Seeded with the spike's probe subject (spike/prompts.ts `refusal`) so the A1 acceptance test has a target.
+Tom Hanks
