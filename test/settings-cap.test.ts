@@ -15,7 +15,7 @@ function withApp(fn: (t: ReturnType<typeof makeApp>) => Promise<void> | void) {
     try { await fn(t); } finally { delete g.__rsrApp; t.cleanup(); }
   };
 }
-const post = (body: unknown, headers: Record<string, string> = { "content-type": "application/json", "x-rsr": "1" }) =>
+const post = (body: unknown, headers: Record<string, string> = { host: "127.0.0.1:3000", "content-type": "application/json", "x-rsr": "1" }) =>
   capPost(new Request("http://127.0.0.1:3000/api/settings/cap", { method: "POST", headers, body: JSON.stringify(body) }));
 const base = { provider: "xai" as const, model: "grok-imagine-image-2.0", kind: "generate" as const, resolution: "1k", quality: "low", generationId: "00000000-0000-4000-8000-000000000000", attempt: 1, estimateSource: "test", now: new Date("2026-10-08T12:00:00-04:00") };
 
@@ -40,6 +40,7 @@ test("A1 pin 11, line 362: the Settings cap route changes the cap, and the cap c
 
 test("A1 pin 11, line 362: a bad cap value or a cross-site request leaves the cap unchanged", withApp(async (t) => {
   for (const usd of [-1, "10", 10_001, null]) assert.equal((await post({ usd })).status, 400, String(usd));
-  assert.equal((await post({ usd: 1 }, { "content-type": "application/json" })).status, 403);
+  assert.equal((await post({ usd: 1 }, { host: "127.0.0.1:3000", "content-type": "application/json" })).status, 403);
+  assert.equal((await post({ usd: 1 }, { host: "attacker.example:3000", "content-type": "application/json", "x-rsr": "1" })).status, 403, "A1 pin 17, line 368: foreign Host");
   assert.equal(capMicros(t.app.db), 50_000_000);
 }));

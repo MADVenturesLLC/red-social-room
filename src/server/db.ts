@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS spend_ledger (
   month_ny TEXT NOT NULL CHECK (month_ny GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
   provider TEXT NOT NULL CHECK (provider IN ('xai','google')),
   model TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('generate','edit','outpaint','caption','adjustment')),
+  kind TEXT NOT NULL CHECK (kind IN ('generate','edit','outpaint','caption','adjustment','prompt_check')), -- prompt_check: A1 pin 5, line 356
   resolution TEXT, quality TEXT,                         -- price key for the item 2d max rule (open question)
   generation_id TEXT,
   attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt BETWEEN 1 AND 3),

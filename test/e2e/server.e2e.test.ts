@@ -5,19 +5,43 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
+import { connect } from "node:net";
 import { mkdtempSync, rmSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPO_ROOT } from "../../src/server/config.ts";
 import { DUMMY_KEY, sampleJpeg, secretNeedles } from "../helpers.ts";
+import { HOST_REFUSED_BODY } from "../../src/server/hosts.ts";
 
 const OTHER = "dummy_TESTONLY2_YN37HqzjWJUVBEzSe0yEx85UHWPO5NEramEpLdk3wQs5ingajTDuNgrguPUC";
 const GEMINI_DUMMY = "dummyg_TESTONLY_4zxmPjPWZezkrrbewFcerUGlX2tQCAOIkSoD1AiaLJ2fRTUFTqbz82x8FgwD";
 const NEEDLES = [...secretNeedles(DUMMY_KEY), ...secretNeedles(OTHER), ...secretNeedles(GEMINI_DUMMY)];
 const NEXT_BIN = join(REPO_ROOT, "node_modules", "next", "dist", "bin", "next");
 
-let mock: Server, server: ChildProcess, base = "", dataDir = "";
+let mock: Server, server: ChildProcess, base = "", dataDir = "", port = 0;
+// A1 pin 17, line 368: set only when the server STARTS (not at build), to prove it is read at runtime.
+const ALLOWED_HOSTS_ENV = "  Phone.Tailnet-Example.ts.net , other.example ";
+
+/** A raw HTTP request with an exact Host header (fetch always derives Host from the URL). */
+function raw(method: string, path: string, headers: Record<string, string>, body?: string): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, method, path, headers, setHost: false }, (res) => {
+      let text = ""; res.setEncoding("utf8"); res.on("data", (c) => { text += c; }); res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
+    });
+    req.on("error", reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+/** Bytes on the wire, for a request with no Host line at all. */
+function rawSocket(lines: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const s = connect(port, "127.0.0.1", () => s.write(lines));
+    let out = ""; s.setEncoding("utf8"); s.on("data", (c) => { out += c; }); s.on("end", () => resolve(out)); s.on("error", reject);
+    setTimeout(() => s.end(), 2000);
+  });
+}
 const mockSeen: Array<{ path: string; auth: string | undefined }> = [];
 const transcript: Array<{ what: string; text: string }> = [];
 let serverLog = "";
@@ -59,11 +83,13 @@ before(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "rsr-e2e-"));
   const env = childEnv({ XAI_API_KEY: DUMMY_KEY, GEMINI_API_KEY: GEMINI_DUMMY, RSR_DATA_DIR: dataDir, RSR_XAI_BASE_URL: `http://127.0.0.1:${mockPort}` });
   // Build with the dummy keys in the environment, so the bundle scan below would catch any inlining.
+  // RSR_ALLOWED_HOSTS is deliberately absent at build time and present at start (A1 pin 17: read at runtime).
+  assert.equal(env.RSR_ALLOWED_HOSTS, undefined);
   const b = spawnSync(process.execPath, [NEXT_BIN, "build"], { cwd: REPO_ROOT, env, encoding: "utf8", timeout: 300_000 });
   assert.equal(b.status, 0, `next build failed:\n${b.stdout}\n${b.stderr}`);
-  const port = 4300 + Math.floor(Math.random() * 500);
+  port = 4300 + Math.floor(Math.random() * 500);
   base = `http://127.0.0.1:${port}`;
-  server = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(port), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  server = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(port), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env: { ...env, RSR_ALLOWED_HOSTS: ALLOWED_HOSTS_ENV }, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.on("data", (c) => { serverLog += c; });
   server.stderr?.on("data", (c) => { serverLog += c; });
   for (let i = 0; i < 100; i++) {
@@ -129,6 +155,66 @@ test("Settings shows only the last 4; saving a new key never echoes it; the new 
   assert.equal(JSON.parse(bad).error.includes("not a key"), false);
 });
 
+const IMAGES_COUNT = () => { try { return readdirSync(join(dataDir, "images"), { recursive: true }).length; } catch { return 0; } };
+const FOREIGN = { host: "attacker.example:3000", "x-rsr": "1", "sec-fetch-site": "same-origin" };
+
+test("A1 pin 17, line 368: a foreign Host gets 403 (fixed body, no page content) on /settings, a static file, a GET API route and the paid POST - zero provider calls, no ledger row, no file", async () => {
+  const html = await (await fetch(`${base}/`)).text();
+  const asset = html.match(/\/_next\/static\/[^"'\s)]+\.js/)?.[0];
+  assert.ok(asset, "found a static JS file");
+  assert.equal((await fetch(base + asset)).status, 200, "the same file is served to an allowed Host");
+  const statusBefore = await (await fetch(`${base}/api/status`)).json() as { totals: { countedMicros: number; unresolvedCount: number } };
+  const mockBefore = mockSeen.length, imagesBefore = IMAGES_COUNT();
+  const results = [
+    await raw("GET", "/settings", FOREIGN),
+    await raw("GET", "/", FOREIGN),
+    await raw("GET", "/library?q=tabby", FOREIGN),
+    await raw("GET", asset!, FOREIGN),
+    await raw("GET", "/api/library?q=tabby", FOREIGN),
+    await raw("GET", "/api/status", FOREIGN),
+    await raw("POST", "/api/generate", { ...FOREIGN, "content-type": "application/json" }, JSON.stringify({ prompt: "a red fox in snow", ratio: "1:1" })),
+    await raw("POST", "/api/settings/cap", { ...FOREIGN, "content-type": "application/json" }, JSON.stringify({ usd: 10000 })),
+  ];
+  for (const r of results) {
+    assert.equal(r.status, 403);
+    assert.equal(r.text, HOST_REFUSED_BODY);
+  }
+  assert.equal(mockSeen.length, mockBefore, "zero mock-provider requests");
+  assert.equal(IMAGES_COUNT(), imagesBefore, "no image file written");
+  const statusAfter = await (await fetch(`${base}/api/status`)).json() as { totals: { countedMicros: number; unresolvedCount: number; capMicros: number } };
+  assert.equal(statusAfter.totals.countedMicros, statusBefore.totals.countedMicros, "no ledger row");
+  assert.equal(statusAfter.totals.capMicros, 50_000_000, "cap unchanged");
+});
+
+test("A1 pin 17, line 368: X-Forwarded-Host is ignored (cannot unlock a foreign Host, cannot lock out an allowed one)", async () => {
+  const a = await raw("GET", "/settings", { host: "attacker.example", "x-forwarded-host": `127.0.0.1:${port}` });
+  assert.equal(a.status, 403); assert.equal(a.text, HOST_REFUSED_BODY);
+  const b = await raw("GET", "/settings", { host: `127.0.0.1:${port}`, "x-forwarded-host": "attacker.example" });
+  assert.equal(b.status, 200); assert.match(b.text, /<h1>Settings<\/h1>/);
+});
+
+test("A1 pin 17, line 368: a name from RSR_ALLOWED_HOSTS (set only at start, not at build) is accepted with its port and in mixed case; [::1] and localhost too", async () => {
+  for (const host of ["PHONE.tailnet-example.TS.NET:443", "phone.tailnet-example.ts.net", "Other.Example:8443", `[::1]:${port}`, `LocalHost:${port}`]) {
+    const r = await raw("GET", "/settings", { host });
+    assert.equal(r.status, 200, host);
+    assert.match(r.text, /<h1>Settings<\/h1>/, host);
+  }
+  const s = await raw("GET", "/api/status", { host: "phone.tailnet-example.ts.net:443" });
+  assert.equal(s.status, 200);
+});
+
+test("A1 pin 17, line 368: an empty Host gets the 403; a request with no Host line at all never reaches the app", async () => {
+  const empty = await rawSocket("GET /settings HTTP/1.1\r\nHost: \r\nConnection: close\r\n\r\n");
+  assert.match(empty, /^HTTP\/1\.1 (403|400) /);
+  assert.doesNotMatch(empty, /<h1>Settings<\/h1>/);
+  const none = await rawSocket("GET /settings HTTP/1.1\r\nConnection: close\r\n\r\n");
+  assert.match(none, /^HTTP\/1\.1 (403|400) /);
+  assert.doesNotMatch(none, /<h1>Settings<\/h1>/);
+  emptyHostStatus = empty.slice(9, 12); missingHostStatus = none.slice(9, 12);
+});
+let emptyHostStatus = "", missingHostStatus = "";
+after(() => { console.log(`# host probe: empty Host -> ${emptyHostStatus}, missing Host -> ${missingHostStatus}`); });
+
 test("POSTs without the same-origin header, or marked cross-site, are refused before anything runs", async () => {
   const n = mockSeen.length;
   assert.equal((await post("/api/generate", { prompt: "x", ratio: "1:1" }, {})).status, 403);
@@ -152,8 +238,11 @@ test("no response body or header, and no built browser file, contains any key (f
   const walk = (d: string): string[] => readdirSync(d).flatMap((f) => { const p = join(d, f); return statSync(p).isDirectory() ? walk(p) : [p]; });
   const staticFiles = walk(join(REPO_ROOT, ".next", "static"));
   for (const f of staticFiles) { const s = readFileSync(f, "latin1"); for (const n of NEEDLES) if (s.includes(n)) hits.push(`${f} contains a key needle`); }
-  // Server-rendered HTML/RSC payloads Next wrote at build time.
-  for (const f of walk(join(REPO_ROOT, ".next", "server")).filter((p) => /\.(html|rsc|body|json)$/.test(p))) { const s = readFileSync(f, "latin1"); for (const n of NEEDLES) if (s.includes(n)) hits.push(`${f} contains a key needle`); }
+  // Everything Next wrote for the server at build time (Argus L3): JS chunks and source maps, where build-time
+  // inlining would land, plus the HTML/RSC/JSON payloads.
+  const serverFiles = walk(join(REPO_ROOT, ".next", "server"));
+  assert.ok(serverFiles.filter((p) => p.endsWith(".js")).length > 5, "server JS chunks are scanned");
+  for (const f of serverFiles) { const s = readFileSync(f, "latin1"); for (const n of NEEDLES) if (s.includes(n)) hits.push(`${f} contains a key needle`); }
   // The server's own log.
   for (const n of NEEDLES) if (serverLog.includes(n)) hits.push("server log contains a key needle");
   assert.ok(transcript.length >= 15, `checked ${transcript.length} responses`);

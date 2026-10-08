@@ -377,10 +377,10 @@ test("A1 pin 10, line 361: a quota/billing 429 is not retried and says so", with
   assert.deepEqual(t.sleeps, []);
 }, { gen: [QUOTA_429] }));
 
-// ---- Surface ruling, room 2026-10-07 11:38 PM ET (future A1 pin 15): quota-429 words + 429 body notes ----
+// ---- Surface ruling, room 2026-10-07 11:38 PM ET (A1 pin 15, line 366): quota-429 words + 429 body notes ----
 
 for (const body of ["QUOTA exceeded for this team", "Spending Limit reached", "BILLING is on hold", "Insufficient Balance", "out of Credits"]) {
-  test(`future A1 pin 15: the quota-429 word list matches case-insensitively ('${body}') -> quota, no retry`, withApp(async (t, x) => {
+  test(`A1 pin 15, line 366: the quota-429 word list matches case-insensitively ('${body}') -> quota, no retry`, withApp(async (t, x) => {
     const out = await run(t);
     assert.equal(out.kind === "error" && out.code, "quota");
     assert.equal(x.posts().length, 1);
@@ -388,7 +388,7 @@ for (const body of ["QUOTA exceeded for this team", "Spending Limit reached", "B
   }, { gen: [text(429, body)] }));
 }
 
-test("future A1 pin 15: a 429 body longer than 500 characters stores exactly the first 500 (code points, emoji at the cut kept whole)", withApp(async (t) => {
+test("A1 pin 15, line 366: a 429 body longer than 500 characters stores exactly the first 500 (code points, emoji at the cut kept whole)", withApp(async (t) => {
   const body = "r".repeat(499) + "\u{1F600}" + "s".repeat(300);
   await run(t);
   const [row] = ledgerRows(t.app);
@@ -401,7 +401,7 @@ test("future A1 pin 15: a 429 body longer than 500 characters stores exactly the
   assert.equal(/[\uD800-\uDBFF]$/.test(note), false, "no lone high surrogate at the cut");
 }, { gen: [text(429, "r".repeat(499) + "\u{1F600}" + "s".repeat(300), "text/plain; charset=utf-8")] }));
 
-test("future A1 pin 15: a 429 body echoing the key or a bearer token is redacted before it reaches the ledger", withApp(async (t) => {
+test("A1 pin 15, line 366: a 429 body echoing the key or a bearer token is redacted before it reaches the ledger", withApp(async (t) => {
   await run(t);
   const [row] = ledgerRows(t.app);
   const note = String(row.note);
@@ -410,7 +410,7 @@ test("future A1 pin 15: a 429 body echoing the key or a bearer token is redacted
   for (const n of [...secretNeedles(DUMMY_KEY), "abc.DEF-123_xyz"]) assert.equal(all.includes(n), false);
 }, { gen: [text(429, `key ${DUMMY_KEY} hit its limit; Authorization: Bearer ${DUMMY_KEY}; other bearer abc.DEF-123_xyz end`, "text/plain")] }));
 
-test("future A1 pin 15: a non-quota 429 still follows F4 (2 s, 4 s, 3 attempts) and every row keeps its note, all unresolved", withApp(async (t, x) => {
+test("A1 pin 15, line 366: a non-quota 429 still follows F4 (2 s, 4 s, 3 attempts) and every row keeps its note, all unresolved", withApp(async (t, x) => {
   const out = await run(t);
   assert.equal(out.kind === "error" && out.code, "rate_limit");
   assert.equal(x.posts().length, 3);
@@ -420,7 +420,7 @@ test("future A1 pin 15: a non-quota 429 still follows F4 (2 s, 4 s, 3 attempts) 
   assert.deepEqual(rows.map((r) => r.note), Array(3).fill('{"error":"slow down, too many requests"}'));
 }, { gen: [() => jsonRes(429, { error: "slow down, too many requests" })] }));
 
-test("future A1 pin 15: a quota 429 follows F8 - no retry, note kept, unresolved, and the key check re-runs before the next paid call", withApp(async (t, x) => {
+test("A1 pin 15, line 366: a quota 429 follows F8 - no retry, note kept, unresolved, and the key check re-runs before the next paid call", withApp(async (t, x) => {
   const out = await run(t);
   assert.equal(out.kind === "error" && out.code, "quota");
   assert.equal(x.posts().length, 1);
@@ -432,6 +432,60 @@ test("future A1 pin 15: a quota 429 follows F8 - no retry, note kept, unresolved
   await run(t);
   assert.deepEqual(x.requests.slice(before).map((r) => `${r.method} ${r.path}`), ["GET /v1/api-key", "GET /v1/image-generation-models", "POST /v1/images/generations"]);
 }, { gen: [QUOTA_429, () => genOk()] }));
+
+for (const off of [480, 490, 495, 499, 500, 520, 560]) {
+  test(`A1 pin 15, line 366 (Argus L1): a key starting at character ${off} of a 429 body is redacted BEFORE the 500-character cut (plain and Bearer)`, withApp(async (t) => {
+    await run(t);
+    const rows = ledgerRows(t.app);
+    assert.equal(rows.length, 3, "a non-quota 429 follows F4: 3 attempts, each with its note");
+    const note = rows.map((r) => String(r.note)).join("\n");
+    for (const r of rows) assert.equal(Array.from(String(r.note)).length, 500);
+    const all = JSON.stringify(t.app.db.prepare("SELECT * FROM spend_ledger").all()) + JSON.stringify(t.app.db.prepare("SELECT * FROM events").all());
+    for (const n of secretNeedles(DUMMY_KEY)) { assert.equal(note.includes(n), false, n); assert.equal(all.includes(n), false, n); }
+  }, { gen: [text(429, "q".repeat(off) + DUMMY_KEY + " and Bearer " + DUMMY_KEY + " " + "z".repeat(300))] }));
+}
+
+for (const [label, ticks] of [["1e30", 1e30], ["-5", -5], ["1.5", 1.5], ["a string", "400000000"], ["null", null]] as const) {
+  test(`Argus L2: usage.cost_in_usd_ticks = ${label} on a 200 -> row unresolved with a note (never stuck 'reserved', never $0), estimate keeps counting`, withApp(async (t) => {
+    const out = await run(t);
+    assert.equal(out.kind, "ok", "the image is still delivered");
+    const [row] = ledgerRows(t.app);
+    assert.equal(row.status, "unresolved");
+    assert.equal(row.actual_micro_usd, null);
+    assert.match(String(row.note), /^invalid usage\.cost_in_usd_ticks: /);
+    assert.match(String(row.cost_detail), /invalid usage\.cost_in_usd_ticks/);
+    assert.equal(monthTotals(t.app.db).countedMicros, 40000);
+    assert.equal(Number((t.app.db.prepare("SELECT COUNT(*) AS n FROM spend_ledger WHERE status = 'reserved'").get() as { n: number }).n), 0);
+  }, { gen: [async () => { const ok = await genOk(); const j = await ok.json() as { usage: Record<string, unknown> }; j.usage.cost_in_usd_ticks = ticks; return jsonRes(200, j); }] }));
+}
+
+test("Argus L2: a valid large bill (1e12 ticks = $100, the ceiling) still settles as billed", withApp(async (t) => {
+  await run(t);
+  const [row] = ledgerRows(t.app);
+  assert.equal(row.status, "settled"); assert.equal(row.actual_micro_usd, 100_000_000);
+}, { gen: [() => genOk(1_000_000_000_000)], capUsd: 1000 }));
+
+const OTHER_KEY = "dummy_TESTONLY3_oNAtfjvv5ih0HYWRRuWU8LBitF9rMInFMku3I8KH641Xs4qM";
+test("A1 pin 10, line 361 (Argus L6): a key change re-runs the key check even without a forced check (fingerprint guard on the cache)", withApp(async (t, x) => {
+  assert.equal((await run(t)).kind, "ok");
+  t.app.keys.save(OTHER_KEY); // no checkKey(force) here, unlike the Settings route
+  assert.equal((await run(t)).kind, "ok");
+  assert.equal(x.requests.filter((r) => r.path === "/v1/api-key").length, 2);
+  assert.deepEqual(x.posts().map((p) => p.headers.authorization), [`Bearer ${DUMMY_KEY}`, `Bearer ${OTHER_KEY}`]);
+  const checks = x.requests.filter((r) => r.path === "/v1/api-key").map((r) => r.headers.authorization);
+  assert.deepEqual(checks, [`Bearer ${DUMMY_KEY}`, `Bearer ${OTHER_KEY}`]);
+}, { gen: [() => genOk()] }));
+
+test("A1 pin 16, line 367: after a 402 the re-check passes and the next paid call goes out; each 402 is held at its estimate (no extra block)", withApp(async (t, x) => {
+  const a = await run(t);
+  const b = await run(t);
+  assert.equal(a.kind === "error" && a.code, "quota");
+  assert.equal(b.kind === "error" && b.code, "quota");
+  assert.equal(x.posts().length, 2);
+  assert.equal(x.requests.filter((r) => r.path === "/v1/api-key").length, 2);
+  assert.deepEqual(ledgerRows(t.app).map((r) => r.status), ["unresolved", "unresolved"]);
+  assert.equal(monthTotals(t.app.db).countedMicros, 80000);
+}, { gen: [() => jsonRes(402, { error: "no credits" })] }));
 
 test("only 429 rows get a body note (a 503 row's note stays empty)", withApp(async (t) => {
   await run(t);

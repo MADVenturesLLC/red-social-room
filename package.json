@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "node spike/check-node.mjs && next dev",
     "build": "node spike/check-node.mjs && next build",
-    "start": "node spike/check-node.mjs && next start -H 0.0.0.0 -p 3000",
+    "start": "node spike/check-node.mjs && next start -H 127.0.0.1 -p 3000",
+    "start:container": "next start -H 0.0.0.0 -p 3000",
     "check-node": "node spike/check-node.mjs",
     "typecheck": "node spike/check-node.mjs && tsc -p tsconfig.json",
     "test": "node spike/check-node.mjs && node --disable-warning=ExperimentalWarning --test \"spike/test/*.test.ts\" \"test/*.test.ts\"",

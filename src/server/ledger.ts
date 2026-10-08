@@ -47,7 +47,7 @@ export function monthTotals(db: DB, monthNY = currentMonthNY()): MonthTotals {
 }
 
 export interface ReserveInput {
-  provider: "xai" | "google"; model: string; kind: "generate" | "edit"; resolution: string; quality: string | null;
+  provider: "xai" | "google"; model: string; kind: "generate" | "edit" | "prompt_check"; resolution: string; quality: string | null;
   generationId: string; attempt: number; estimateMicros: number; estimateSource: string;
   now?: Date; // test seam for the month boundary
 }
@@ -128,6 +128,17 @@ export function markUnresolved(db: DB, id: string, s: { reason: string; provider
   const r = db.prepare(`UPDATE spend_ledger SET status = 'unresolved', cost_detail = ?, provider_request_id = ?, provider_trace = ?, http_status = ?, outcome = ?, note = ? WHERE id = ? AND status = 'reserved'`)
     .run(JSON.stringify({ reason: s.reason }), s.providerRequestId ?? null, s.providerTrace ?? null, s.httpStatus, s.outcome, s.note ?? null, id);
   if (Number(r.changes) !== 1) throw new Error(`ledger row ${id} is not in state reserved; not marked unresolved`);
+}
+
+/**
+ * Argus L2 on fa3d359: a row still `reserved` when the app starts belongs to a call that was in flight when the
+ * process stopped (one process; nothing else writes the ledger). Mark each `unresolved` ("interrupted") so it shows
+ * in Settings -> Unresolved for reconciling; its estimate keeps counting against the cap either way.
+ */
+export function markInterrupted(db: DB): number {
+  const r = db.prepare(`UPDATE spend_ledger SET status = 'unresolved', outcome = 'interrupted', cost_detail = ?, note = ? WHERE status = 'reserved'`)
+    .run(JSON.stringify({ reason: "unresolved: the app stopped while this call was in flight; reservation kept" }), "interrupted: still reserved at app start");
+  return Number(r.changes);
 }
 
 /** Highest settled bill for the same price key (Amendment 1 item 2d). 0 if none. */

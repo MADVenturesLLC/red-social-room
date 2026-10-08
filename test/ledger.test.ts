@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { openDb, LEDGER_SEEDS, validateSeed, type SeedFile } from "../src/server/db.ts";
-import { reserve, settle, markUnresolved, monthTotals, CapRefused, setCapUsd, priceDrifts } from "../src/server/ledger.ts";
+import { reserve, settle, markUnresolved, monthTotals, CapRefused, setCapUsd, priceDrifts, markInterrupted, unresolvedRows } from "../src/server/ledger.ts";
 import { estimate, loadPrices } from "../src/server/prices.ts";
 import { REPO_ROOT } from "../src/server/config.ts";
 
@@ -169,6 +169,46 @@ test("item 17: the cap month is the America/New_York calendar month of the reser
   setCapUsd(db, 0.05);
   assert.throws(() => reserve(db, { ...base, estimateMicros: 40000, now: new Date("2026-10-20T12:00:00Z") }), /wait until Nov 1, 12:00 AM ET/);
   assert.throws(() => reserve(db, { ...base, estimateMicros: 40000, now: new Date("2026-12-20T12:00:00Z") }), /wait until Jan 1, 2027, 12:00 AM ET/);
+});
+
+test("item 17 (Argus M3): a full October does not block November, and November counts only November spend", () => {
+  const db = openDb(":memory:", { spikeLedgerPath: null });
+  setCapUsd(db, 0.05);
+  const oct = reserve(db, { ...base, estimateMicros: 40000, now: new Date("2026-10-31T12:00:00-04:00") });
+  settle(db, oct.id, { actualMicros: 40000, costSource: "billed_provider", httpStatus: 200, outcome: "ok" });
+  // Last second of October in New York (03:59:59Z on Nov 1) is still October: refused.
+  assert.throws(() => reserve(db, { ...base, estimateMicros: 40000, now: new Date("2026-11-01T03:59:59Z") }), /\$0\.04 counted.*wait until Nov 1, 12:00 AM ET/);
+  // First second of November in New York: allowed, because only November is summed.
+  const nov = reserve(db, { ...base, estimateMicros: 40000, now: new Date("2026-11-01T04:00:00Z") });
+  assert.equal((db.prepare("SELECT month_ny FROM spend_ledger WHERE id = ?").get(nov.id) as { month_ny: string }).month_ny, "2026-11");
+  // November now holds $0.04 of its own; the next $0.04 passes the $0.05 cap and is refused, naming only November's $0.04.
+  assert.throws(() => reserve(db, { ...base, estimateMicros: 40000, now: new Date("2026-11-15T12:00:00Z") }), /\(\$0\.04 counted across xAI and Google, including \$0\.04 held/);
+  const novT = monthTotals(db, "2026-11"), octT = monthTotals(db, "2026-10");
+  assert.equal(novT.countedMicros, 40000);
+  assert.equal(octT.countedMicros, 40000);
+  // A small November call still fits: 40000 + 10000 = cap.
+  reserve(db, { ...base, estimateMicros: 10000, now: new Date("2026-11-15T12:00:00Z") });
+});
+
+test("A1 pin 5, line 356 (Argus L4): the ledger accepts kind 'prompt_check'", () => {
+  const db = openDb(":memory:", { spikeLedgerPath: null });
+  const r = reserve(db, { ...base, kind: "prompt_check", estimateMicros: 100, now: OCT });
+  settle(db, r.id, { actualMicros: 0, costSource: "not_sent", httpStatus: null, outcome: "ok" });
+  assert.equal((db.prepare("SELECT kind FROM spend_ledger WHERE id = ?").get(r.id) as { kind: string }).kind, "prompt_check");
+  assert.throws(() => db.prepare("INSERT INTO spend_ledger (id, created_at, month_ny, provider, model, kind, estimate_micro_usd, estimate_source, status) VALUES ('x', 'now', '2026-10', 'xai', 'm', 'bogus', 1, 't', 'reserved')").run(), /CHECK constraint failed/);
+});
+
+test("Argus L2: rows still 'reserved' at app start are marked unresolved ('interrupted'), keep counting, and show in Unresolved", () => {
+  const db = openDb(":memory:", { spikeLedgerPath: null });
+  const a = reserve(db, { ...base, estimateMicros: 40000, now: OCT });
+  const b = reserve(db, { ...base, estimateMicros: 40000, now: OCT });
+  settle(db, b.id, { actualMicros: 40000, costSource: "billed_provider", httpStatus: 200, outcome: "ok" });
+  assert.equal(markInterrupted(db), 1);
+  const row = db.prepare("SELECT status, outcome, note FROM spend_ledger WHERE id = ?").get(a.id) as Record<string, unknown>;
+  assert.deepEqual({ ...row }, { status: "unresolved", outcome: "interrupted", note: "interrupted: still reserved at app start" });
+  assert.deepEqual(unresolvedRows(db).map((r) => r.id), [a.id]);
+  assert.equal(monthTotals(db, "2026-10").countedMicros, 80000);
+  assert.equal(markInterrupted(db), 0);
 });
 
 test("section 3.4: the ledger is append-only — no deletes, settled rows are final, fixed columns never change", () => {

@@ -2,11 +2,14 @@
 // The app is tailnet-only with no login, so a cross-site page must not be able to make it spend money:
 // every POST must carry the custom header x-rsr: 1 and a JSON content type (a cross-origin page cannot
 // send that without a CORS preflight, which this app never approves), and Sec-Fetch-Site must not be cross-site.
+// The Host check (A1 pin 17, line 368) runs first: in src/proxy.ts for every route, and again here.
+import { hostGuard } from "./hosts.ts";
 export function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
 }
 
 export function guardPost(req: Request): Response | null {
+  const host = hostGuard(req); if (host) return host;
   if (req.headers.get("x-rsr") !== "1") return json({ error: "Missing x-rsr header." }, 403);
   if (!(req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return json({ error: "Expected JSON." }, 415);
   if (req.headers.get("sec-fetch-site") === "cross-site") return json({ error: "Cross-site request refused." }, 403);

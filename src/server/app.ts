@@ -3,6 +3,7 @@
 import { join } from "node:path";
 import { dataDir, loadSwitches, REPO_ROOT } from "./config.ts";
 import { openDb } from "./db.ts";
+import { markInterrupted } from "./ledger.ts";
 import { KeyStore } from "./keys.ts";
 import { loadPrices } from "./prices.ts";
 import { nameListMethod } from "./prompt-check.ts";
@@ -39,6 +40,9 @@ export function getApp(): AppDeps {
     log: (m) => console.log(`[rsr] ${new Date().toISOString()} ${keys.scrub(m)}`),
   };
   g.__rsrApp = app;
+  // Rows left `reserved` by a previous process were in flight when it stopped (Argus L2): list them as unresolved.
+  const interrupted = markInterrupted(app.db);
+  if (interrupted > 0) app.log?.(`marked ${interrupted} interrupted reservation(s) unresolved at start`);
   // Free key check at app start (Amendment 1 item 19). Not awaited; failures show on the card and in Settings.
   if (keys.status().set) void checkKey(app).catch(() => undefined);
   return app;

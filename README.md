@@ -6,7 +6,7 @@ Act 0 spike (see `spike-results/REPORT.md`) and the A1 app (below). Plan: `docs/
 
 - **Node >= 22.18** (runs `.ts` directly via type stripping). On the box the default `node` is v20, which cannot run these scripts, so first:
   `export PATH=/home/box/node22/bin:$PATH` (Node 22.19). Every npm script starts with `spike/check-node.mjs`, which fails with this hint on an older Node.
-- No runtime dependencies. Dev only: `typescript` and `@types/node` (pinned in `package.json` / `package-lock.json`), installed with `npm ci`.
+- Runtime dependencies (A1 app): `next`, `react`, `react-dom`, `sharp`. Dev: `typescript`, `@types/node`, `@types/react`, `@types/react-dom`. All pinned in `package.json` / `package-lock.json` and installed with `npm ci`. The spike scripts themselves use only Node built-ins.
 - Paid scripts need `XAI_API_KEY` / `GEMINI_API_KEY` in the environment. Tests, typecheck and the leak scan's pattern rules need no keys and make no network calls.
 
 ## Offline (no network, no spend)
@@ -14,8 +14,9 @@ Act 0 spike (see `spike-results/REPORT.md`) and the A1 app (below). Plan: `docs/
 ```
 npm ci                 # dev deps for the typecheck
 npm run typecheck      # tsc -p tsconfig.json (strict, noEmit)
-npm test               # node --test "spike/test/*.test.ts": spend guard, ledger validation, step outputs, scan rules, Gemini cost rule,
-                       # and the paid scripts run against a fake transport (spike/test/fixtures/fetch-stub.mjs, dummy keys, nothing sent)
+npm test               # node --test "spike/test/*.test.ts" "test/*.test.ts": the spike tests (spend guard, ledger validation, step outputs,
+                       # scan rules, Gemini cost rule, paid scripts against a fake transport) plus the A1 app unit tests (fake xAI,
+                       # dummy keys, nothing sent). npm run test:e2e builds and starts the app against a local fake xAI.
 npm run check-secrets  # leak scan: pattern rules always; exact key match too if the keys are in env (prints counts only)
 npm run ledger         # spend ledger view (shared $50/month cap, $3 spike cap)
 ```
@@ -61,7 +62,7 @@ TECH-PLAN-v1.md section 9 A1, as amended by Amendment 1 section 4: prompt -> Gro
 ```
 export PATH=/home/box/node22/bin:$PATH   # Node >= 22.18
 npm ci
-npm run build && npm start               # http://localhost:3000; key from XAI_API_KEY or the Settings page
+npm run build && npm start               # http://127.0.0.1:3000 (binds 127.0.0.1 only, not the LAN); key from XAI_API_KEY or Settings
 npm test                                 # spike + app unit tests (no network, dummy keys)
 npm run test:e2e                         # next build + next start against a local fake xAI; key-leak scan
 ```
@@ -76,4 +77,14 @@ tailscale serve --bg --https=443 http://127.0.0.1:3000
 tailscale serve status                   # shows https://<machine>.<tailnet>.ts.net/
 ```
 
-Open the `https://<machine>.<tailnet>.ts.net/` URL on the phone (signed in to the same tailnet). To stop sharing: `tailscale serve --https=443 off`. The app has no login of its own; Tailscale is the only way in, and the compose file binds to 127.0.0.1 so it is not reachable on the LAN.
+Open the `https://<machine>.<tailnet>.ts.net/` URL on the phone (signed in to the same tailnet). To stop sharing: `tailscale serve --https=443 off`. The app has no login of its own; Tailscale is the only way in. `npm start` binds 127.0.0.1, and the compose file publishes the port on 127.0.0.1 only (inside the container the app listens on 0.0.0.0, `npm run start:container` / the Dockerfile `CMD`), so neither is reachable from the LAN. Tailscale Serve proxies to 127.0.0.1, so that is enough for it.
+
+### Allowed hosts (A1 pin 17, Amendment 1 line 368)
+
+Every page, API route and asset first checks the `Host` header (DNS-rebinding guard). The host name is compared without its port and case-insensitively. Allowed by default: `localhost`, `127.0.0.1`, `[::1]`. Add more with `RSR_ALLOWED_HOSTS` (comma-separated, spaces trimmed), read when the server starts handling requests (no rebuild needed), e.g. in `.env`:
+
+```
+RSR_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net
+```
+
+A missing, empty or unlisted `Host` gets `403 {"error":"Host not allowed."}` and nothing runs. `X-Forwarded-Host` is ignored. Which `Host` `tailscale serve` passes through is UNVERIFIED (pin 17): if the phone gets that 403, add the `ts.net` name above and restart.

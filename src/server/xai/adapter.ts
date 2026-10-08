@@ -76,7 +76,7 @@ function providerText(r: AttemptResult, keys: KeyStore): string {
   return keys.scrub(t).slice(0, 500);
 }
 
-/** Characters of a 429 body kept in the ledger row's note (Surface ruling, room 2026-10-07 11:38 PM ET, future A1 pin 15). */
+/** Characters of a 429 body kept in the ledger row's note (Surface ruling, room 2026-10-07 11:38 PM ET, A1 pin 15, line 366). */
 export const BODY_NOTE_CHARS = 500;
 
 /**
@@ -132,7 +132,25 @@ export function invalidateKeyCheck(d: XaiDeps): void { d.keyCheck.ok = false; }
 
 /** Cost of one attempt. Starts from the spike's xaiCost; adds the F9/F15 rule that a 200 without an image and
  *  without usage is held (not priced from the table), and the P7 alternative when the switch says so. */
+/** Largest believable bill for one image call: 1e12 ticks = $100. */
+export const MAX_TICKS = 1_000_000_000_000;
+
+/**
+ * Argus L2 on fa3d359: usage.cost_in_usd_ticks is used only if it is a safe, non-negative integer no larger than
+ * MAX_TICKS. Returns why it is unusable, or null when it is absent or fine.
+ */
+export function ticksProblem(json: unknown): string | null {
+  const u = (json as { usage?: unknown } | null)?.usage;
+  if (!u || typeof u !== "object" || !("cost_in_usd_ticks" in u)) return null;
+  const t = (u as { cost_in_usd_ticks: unknown }).cost_in_usd_ticks;
+  if (typeof t === "number" && Number.isSafeInteger(t) && t >= 0 && t <= MAX_TICKS) return null;
+  const shown = typeof t === "number" ? String(t) : (JSON.stringify(t) ?? String(t)).slice(0, 100);
+  return `invalid usage.cost_in_usd_ticks: ${shown} (not a whole number of ticks from 0 to ${MAX_TICKS})`;
+}
+
 export function attemptCost(r: AttemptResult, estimateMicros: number, hasImage: boolean, s: Switches): StepCost {
+  const bad = ticksProblem(r.json);
+  if (bad) return { usd: null, basis: `unresolved: ${bad}; reservation kept until console check`, billed: false };
   const base = xaiCost(r, estimateMicros / 1e6);
   if (r.outcome === "ok" && !base.billed && !hasImage) {
     return { usd: null, basis: "unresolved: HTTP 200 with no image and no usage field (Amendment 1 F9/F15); reservation kept", billed: false };
@@ -219,17 +237,27 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
       cost = { usd: null, basis: `unresolved: cost rule threw (${(e as Error).name})`, billed: false };
     }
     // Every 429 (quota-matched or not) keeps its scrubbed body excerpt so the quota word list can be tightened
-    // once a real xAI quota body is seen (future A1 pin 15).
-    const note = r.status === 429 ? bodyNote(r.text, d.keys) : null;
+    // once a real xAI quota body is seen (A1 pin 15, line 366).
+    // An unusable tick value (Argus L2) is noted on the row; a 429 row keeps its body excerpt (A1 pin 15, line 366)
+    // and the tick problem stays in cost_detail.
+    const badTicks = ticksProblem(r.json);
+    const note = r.status === 429 ? bodyNote(r.text, d.keys) : badTicks;
+    const hold = (reason: string): CostInfo => {
+      markUnresolved(d.db, id, { reason, providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome, note });
+      return { micros: null, source: "unresolved", heldMicros: est.micros };
+    };
     let costInfo: CostInfo;
-    if (cost.usd === null) {
-      markUnresolved(d.db, id, { reason: cost.basis, providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome, note });
-      costInfo = { micros: null, source: "unresolved", heldMicros: est.micros };
-    } else {
-      const micros = toMicros(cost.usd);
-      const src = costSourceOf(cost);
-      settle(d.db, id, { actualMicros: micros, costSource: src, costDetail: JSON.stringify({ basis: cost.basis, ticks: j?.usage?.cost_in_usd_ticks ?? null }), providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome, note });
-      costInfo = { micros, source: src, heldMicros: 0 };
+    if (cost.usd === null) costInfo = hold(cost.basis);
+    else {
+      // A settle that throws (e.g. an amount the ledger refuses) must not leave the row stuck as `reserved`.
+      try {
+        const micros = toMicros(cost.usd);
+        const src = costSourceOf(cost);
+        settle(d.db, id, { actualMicros: micros, costSource: src, costDetail: JSON.stringify({ basis: cost.basis, ticks: j?.usage?.cost_in_usd_ticks ?? null }), providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome, note });
+        costInfo = { micros, source: src, heldMicros: 0 };
+      } catch (e) {
+        costInfo = hold(`unresolved: settling failed (${(e as Error).name}: ${(e as Error).message.slice(0, 200)}); reservation kept`);
+      }
     }
     attempts.push({ clientRequestId: id, status: r.status, outcome: r.outcome, costMicros: costInfo.micros, costSource: costInfo.source });
     log(`xai generate gen=${req.generationId} ref=${id} attempt=${attempt} outcome=${r.outcome} status=${r.status} latency=${r.latency_ms}ms cost=${costInfo.micros === null ? `held ${fmtUsd(est.micros)}` : fmtUsd(costInfo.micros)} (${costInfo.source})`);
@@ -247,7 +275,7 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
       const image = Buffer.from(b64, "base64");
       return { kind: "ok", image, mime: typeof first?.mime_type === "string" ? first.mime_type : null, clientRequestId: id, providerRequestId, providerTrace: trace, cost: costInfo, latencyMs: r.latency_ms, attempts, modelVersionListing: kc.versionListing, sentRatio: mapped.send };
     }
-    // Amendment 1 item 19 / F8 / A1 pin 10, line 361 / future A1 pin 15: a 429 that is about quota, credits or
+    // Amendment 1 item 19 / F8 / A1 pin 10, line 361 / A1 pin 15, line 366: a 429 that is about quota, credits or
     // billing (xAI's shape is UNVERIFIED, so this matches the words in the body, case-insensitively) is a quota
     // error, not a rate limit: no retry, and the key check re-runs before the next paid call.
     if (st === 429 && QUOTA_429_RE.test(r.text ?? "")) { invalidateKeyCheck(d); return err("quota", "xAI quota or billing limit reached (HTTP 429) — check console.x.ai."); }

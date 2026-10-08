@@ -33,6 +33,33 @@ function errCode(e: unknown): string | null {
   return null;
 }
 
+/**
+ * Read a response body with a byte cap (F15; Argus L6 on fa3d359): stops and cancels the stream as soon as more
+ * than maxBytes have arrived (or Content-Length already says so), so an oversized body is never held in memory.
+ */
+export async function readCapped(res: Response, maxBytes: number): Promise<{ buf: Buffer; oversize: boolean }> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => undefined);
+    return { buf: Buffer.alloc(0), oversize: true };
+  }
+  if (!res.body) return { buf: Buffer.alloc(0), oversize: false };
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return { buf: Buffer.alloc(0), oversize: true };
+    }
+    chunks.push(value);
+  }
+  return { buf: Buffer.concat(chunks, total), oversize: false };
+}
+
 export async function attemptOnce(fetchImpl: FetchLike, spec: { method: "GET" | "POST"; url: string; headers: Record<string, string>; body?: unknown; timeoutMs: number }): Promise<AttemptResult> {
   const startedAt = isoNY();
   const t0 = performance.now();
@@ -44,10 +71,9 @@ export async function attemptOnce(fetchImpl: FetchLike, spec: { method: "GET" | 
       signal: AbortSignal.timeout(spec.timeoutMs),
       redirect: "error",
     });
-    const buf = Buffer.from(await res.arrayBuffer());
+    const { buf, oversize } = await readCapped(res, MAX_BODY_BYTES);
     const headers: Record<string, string> = {};
     res.headers.forEach((v, k) => { if (k !== "set-cookie") headers[k] = v; });
-    const oversize = buf.length > MAX_BODY_BYTES;
     const text = oversize ? "" : buf.toString("utf8");
     let json: unknown = null;
     if (!oversize && text) { try { json = JSON.parse(text); } catch { json = null; } }
