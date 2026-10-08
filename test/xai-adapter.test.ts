@@ -263,6 +263,22 @@ test("G5/F7: a provider error body that echoes the key is shown with the key rem
   }
 }, { gen: [text(422, `key ${DUMMY_KEY} is not allowed`)] }));
 
+test("G5: provider-sent header values that reach a log line (rate-limit, ZDR) are scrubbed of the key", withApp(async (t) => {
+  const out = await run(t);
+  assert.equal(out.kind, "ok");
+  assert.ok(t.logs.some((l) => l.includes("rate-limit remaining=[REDACTED]")));
+  assert.ok(t.logs.some((l) => l.includes("x-zero-data-retention=[REDACTED]")));
+  for (const n of secretNeedles(DUMMY_KEY)) assert.equal(t.logs.some((l) => l.includes(n)), false);
+}, {
+  switches: { xaiDataRetention: "zdr" },
+  gen: [async () => {
+    const r = await genOk();
+    const h = new Headers(r.headers);
+    h.set("x-ratelimit-remaining-requests", DUMMY_KEY); h.set("x-zero-data-retention", DUMMY_KEY);
+    return new Response(await r.arrayBuffer(), { status: 200, headers: h });
+  }],
+}));
+
 test("G5: no raw response body is logged (the image base64 never reaches a log line)", withApp(async (t) => {
   await run(t);
   assert.ok(t.logs.length > 0);
