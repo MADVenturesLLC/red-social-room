@@ -1,0 +1,152 @@
+// End-to-end against the real Next.js production server (next build + next start) and a local fake xAI.
+// Proves the A1 path over HTTP (make -> save -> find by a prompt word) and that NO page, API response,
+// header, or built browser file contains a key (A1 acceptance: "Keys never appear in browser network
+// traffic"; the Settings page shows only the last 4). Dummy keys only; the real env keys are not passed in.
+import { test, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createServer, type Server } from "node:http";
+import { mkdtempSync, rmSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { REPO_ROOT } from "../../src/server/config.ts";
+import { DUMMY_KEY, sampleJpeg, secretNeedles } from "../helpers.ts";
+
+const OTHER = "dummy_TESTONLY2_YN37HqzjWJUVBEzSe0yEx85UHWPO5NEramEpLdk3wQs5ingajTDuNgrguPUC";
+const GEMINI_DUMMY = "dummyg_TESTONLY_4zxmPjPWZezkrrbewFcerUGlX2tQCAOIkSoD1AiaLJ2fRTUFTqbz82x8FgwD";
+const NEEDLES = [...secretNeedles(DUMMY_KEY), ...secretNeedles(OTHER), ...secretNeedles(GEMINI_DUMMY)];
+const NEXT_BIN = join(REPO_ROOT, "node_modules", "next", "dist", "bin", "next");
+
+let mock: Server, server: ChildProcess, base = "", dataDir = "";
+const mockSeen: Array<{ path: string; auth: string | undefined }> = [];
+const transcript: Array<{ what: string; text: string }> = [];
+let serverLog = "";
+
+function childEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
+  // Built from scratch: the real XAI_API_KEY / GEMINI_API_KEY from this shell never reach the child.
+  return { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "/tmp", NEXT_TELEMETRY_DISABLED: "1", ...extra };
+}
+
+async function record(what: string, res: Response): Promise<string> {
+  const text = await res.text();
+  const headers = [...res.headers.entries()].map(([k, v]) => `${k}: ${v}`).join("\n");
+  transcript.push({ what, text: `${headers}\n\n${text}` });
+  return text;
+}
+
+const post = (path: string, body: unknown, headers: Record<string, string> = { "x-rsr": "1" }) =>
+  fetch(base + path, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
+
+before(async () => {
+  const jpeg = await sampleJpeg();
+  mock = createServer((req, res) => {
+    mockSeen.push({ path: req.url ?? "", auth: req.headers.authorization });
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/v1/api-key") return res.end(JSON.stringify({ api_key_blocked: false, api_key_disabled: false, team_blocked: false }));
+      if (req.url === "/v1/image-generation-models") return res.end(JSON.stringify({ models: [{ id: "grok-imagine-image-2.0", version: "1.0", fingerprint: "fp_e2e" }] }));
+      if (req.url === "/v1/images/generations" && req.method === "POST") {
+        res.setHeader("x-request-id", "req-e2e");
+        return res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 400000000 } }));
+      }
+      res.statusCode = 404; res.end("{}");
+    });
+  });
+  await new Promise<void>((r) => mock.listen(0, "127.0.0.1", () => r()));
+  const mockPort = (mock.address() as { port: number }).port;
+  dataDir = mkdtempSync(join(tmpdir(), "rsr-e2e-"));
+  const env = childEnv({ XAI_API_KEY: DUMMY_KEY, GEMINI_API_KEY: GEMINI_DUMMY, RSR_DATA_DIR: dataDir, RSR_XAI_BASE_URL: `http://127.0.0.1:${mockPort}` });
+  // Build with the dummy keys in the environment, so the bundle scan below would catch any inlining.
+  const b = spawnSync(process.execPath, [NEXT_BIN, "build"], { cwd: REPO_ROOT, env, encoding: "utf8", timeout: 300_000 });
+  assert.equal(b.status, 0, `next build failed:\n${b.stdout}\n${b.stderr}`);
+  const port = 4300 + Math.floor(Math.random() * 500);
+  base = `http://127.0.0.1:${port}`;
+  server = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(port), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  server.stdout?.on("data", (c) => { serverLog += c; });
+  server.stderr?.on("data", (c) => { serverLog += c; });
+  for (let i = 0; i < 100; i++) {
+    try { const r = await fetch(`${base}/api/status`); if (r.ok) return; } catch { /* not up yet */ }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`next start did not come up:\n${serverLog}`);
+});
+
+after(() => {
+  server?.kill("SIGTERM");
+  mock?.close();
+  if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("A1 over HTTP: make an image, save it, find it in the Library by a word from the prompt", async () => {
+  const create = await record("GET /", await fetch(`${base}/`));
+  assert.match(create, /Grok Imagine 2\.0/);
+  const g = JSON.parse(await record("POST /api/generate", await post("/api/generate", { prompt: "A friendly orange tabby cat on a windowsill", ratio: "4:5" })));
+  assert.equal(g.status, "ok", JSON.stringify(g));
+  assert.equal(g.displayNote, "Made at 3:4, cropped to 4:5");
+  const img = await fetch(`${base}/api/assets/${g.image.assetId}`);
+  assert.equal(img.headers.get("content-type"), "image/jpeg");
+  assert.ok((await img.arrayBuffer()).byteLength > 1000);
+  const s = JSON.parse(await record("POST /api/library", await post("/api/library", { generationId: g.generationId, notes: "e2e" })));
+  assert.equal(s.already, false);
+  const lib = await record("GET /library?q=tabby", await fetch(`${base}/library?q=tabby`));
+  assert.match(lib, /A friendly orange tabby cat on a windowsill/);
+  assert.match(lib, new RegExp(`/api/assets/${g.image.assetId}`));
+  const none = await record("GET /library?q=giraffe", await fetch(`${base}/library?q=giraffe`));
+  assert.doesNotMatch(none, /tabby cat/);
+  const api = JSON.parse(await record("GET /api/library?q=windowsill", await fetch(`${base}/api/library?q=windowsill`)));
+  assert.equal(api.posts.length, 1);
+  // The server used the key from its own environment when calling xAI.
+  assert.ok(mockSeen.some((m) => m.path === "/v1/images/generations" && m.auth === `Bearer ${DUMMY_KEY}`));
+});
+
+test("Settings shows only the last 4; saving a new key never echoes it; the new key is used server-side", async () => {
+  const before = await record("GET /settings", await fetch(`${base}/settings`));
+  assert.match(before, new RegExp(`ending (<!-- -->)?<code>${DUMMY_KEY.slice(-4)}</code>`));
+  const saved = await record("POST /api/settings/key", await post("/api/settings/key", { key: OTHER }));
+  const sj = JSON.parse(saved);
+  assert.deepEqual(sj.key, { set: true, source: "settings", last4: OTHER.slice(-4) });
+  assert.equal(sj.check.ok, true);
+  const afterHtml = await record("GET /settings (after save)", await fetch(`${base}/settings`));
+  assert.match(afterHtml, new RegExp(`<code>${OTHER.slice(-4)}</code>`));
+  await record("POST /api/settings/check", await post("/api/settings/check", {}));
+  await record("GET /api/status", await fetch(`${base}/api/status`));
+  const g = JSON.parse(await record("POST /api/generate (new key)", await post("/api/generate", { prompt: "a blue heron at dawn", ratio: "1:1" })));
+  assert.equal(g.status, "ok");
+  assert.equal(mockSeen.filter((m) => m.path === "/v1/images/generations").at(-1)?.auth, `Bearer ${OTHER}`);
+  const bad = await record("POST /api/settings/key (bad)", await post("/api/settings/key", { key: "not a key at all" }));
+  assert.equal(JSON.parse(bad).error.includes("not a key"), false);
+});
+
+test("POSTs without the same-origin header, or marked cross-site, are refused before anything runs", async () => {
+  const n = mockSeen.length;
+  assert.equal((await post("/api/generate", { prompt: "x", ratio: "1:1" }, {})).status, 403);
+  assert.equal((await post("/api/generate", { prompt: "x", ratio: "1:1" }, { "x-rsr": "1", "sec-fetch-site": "cross-site" })).status, 403);
+  assert.equal((await fetch(`${base}/api/generate`, { method: "POST", headers: { "x-rsr": "1", "Content-Type": "text/plain" }, body: "{}" })).status, 415);
+  assert.equal(mockSeen.length, n);
+});
+
+test("asset route only serves stored hashes (no path traversal)", async () => {
+  for (const p of ["..%2F..%2Fdb%2Frsr.sqlite", "0".repeat(64), "abc"]) assert.equal((await fetch(`${base}/api/assets/${p}`)).status, 404, p);
+});
+
+test("no response body or header, and no built browser file, contains any key (full, base64, or 12-char fragment)", async () => {
+  // Every JS/CSS file the pages reference, plus every file Next built for the browser.
+  for (const page of ["/", "/library", "/settings"]) {
+    const html = await (await fetch(base + page)).text();
+    for (const m of html.matchAll(/\/_next\/static\/[^"'\s)]+/g)) await record(`GET ${m[0]}`, await fetch(base + m[0]));
+  }
+  const hits: string[] = [];
+  for (const t of transcript) for (const n of NEEDLES) if (t.text.includes(n)) hits.push(`${t.what} contains a key needle (#${NEEDLES.indexOf(n)})`);
+  const walk = (d: string): string[] => readdirSync(d).flatMap((f) => { const p = join(d, f); return statSync(p).isDirectory() ? walk(p) : [p]; });
+  const staticFiles = walk(join(REPO_ROOT, ".next", "static"));
+  for (const f of staticFiles) { const s = readFileSync(f, "latin1"); for (const n of NEEDLES) if (s.includes(n)) hits.push(`${f} contains a key needle`); }
+  // Server-rendered HTML/RSC payloads Next wrote at build time.
+  for (const f of walk(join(REPO_ROOT, ".next", "server")).filter((p) => /\.(html|rsc|body|json)$/.test(p))) { const s = readFileSync(f, "latin1"); for (const n of NEEDLES) if (s.includes(n)) hits.push(`${f} contains a key needle`); }
+  // The server's own log.
+  for (const n of NEEDLES) if (serverLog.includes(n)) hits.push("server log contains a key needle");
+  assert.ok(transcript.length >= 15, `checked ${transcript.length} responses`);
+  assert.ok(staticFiles.length > 5);
+  assert.deepEqual(hits, []);
+});
