@@ -224,12 +224,12 @@ Rows are tried in this order: body codes first, then HTTP status. The Google ada
 | 200, Google status `incomplete` / `failed` / `cancelled` | n/a | documented status enum (https://ai.google.dev/api/interactions-api) | `incomplete` + image → `ok` with a note; otherwise `refused` (no image) or `unavailable` (`failed` / `cancelled`) | none | from usage if present, else `unresolved` |
 | Google generation-blocked code or `no_image` | n/a | documented codes (https://ai.google.dev/gemini-api/docs/api-errors); delivery not observed (UNVERIFIED) | `refused`, code shown | none | from usage if present, else `unresolved` |
 | 400 | OpenAPI: "invalid or an invalid API key" (https://api.x.ai/api-docs/openapi.json). Run the free key check: fails → `auth` (F7), passes → `bad_input` (F6). | google.rpc body with `details[].reason == "API_KEY_INVALID"` → `auth` (observed on `GET /v1beta/models`, `spike-results/gemini/00-preflight-model-get-2026-10-03T2211-bad-paste.json:28-47`); `failed_precondition` / `FAILED_PRECONDITION` → `quota` (F8); `invalid_request`, `parameter_unknown`, `INVALID_ARGUMENT` without that reason → `bad_input` | as stated | none | $0 `assumed_zero_rejected` **In A1 (§4, line 272): until P7 is decided, xAI cases here stay `unresolved` except the non-JSON 422 starting with "Failed to deserialize the JSON body".** |
-| 401 | "invalid authorization token" (https://docs.x.ai/docs/debugging) | `authentication` (https://ai.google.dev/gemini-api/docs/api-errors) | `auth` | none | $0 |
-| 402 | not documented (UNVERIFIED) | `payment_required` (prepay depleted) | `quota` | none | $0 |
-| 403 | "Ask your team admin for permission" | `permission_denied` | `auth` | none | $0 |
+| 401 | "invalid authorization token" (https://docs.x.ai/docs/debugging) | `authentication` (https://ai.google.dev/gemini-api/docs/api-errors) | `auth` | none | $0 **In A1 (§7 pin 1): xAI stays `unresolved` here and counts against the cap until P7 is decided.** |
+| 402 | not documented (UNVERIFIED) | `payment_required` (prepay depleted) | `quota` | none | $0 **In A1 (§7 pin 1): xAI stays `unresolved` here and counts against the cap until P7 is decided.** |
+| 403 | "Ask your team admin for permission" | `permission_denied` | `auth` | none | $0 **In A1 (§7 pin 1): xAI stays `unresolved` here and counts against the cap until P7 is decided.** |
 | 404 / 405 / 415 / 416 | documented on the debugging page | `not_found`, `model_not_found`, `out_of_range` | `bad_input` (404 model → "Model not available") | none | $0 `assumed_zero_rejected` **In A1 (§4, line 272): until P7 is decided, xAI cases here stay `unresolved` except the non-JSON 422 starting with "Failed to deserialize the JSON body".** |
 | 422 | field invalid; body `text/plain` (observed, `spike-results/xai/01-generate-4x5.json:29,37,44`) | not documented | `bad_input` | none | $0 `assumed_zero_rejected` **In A1 (§4, line 272): until P7 is decided, xAI cases here stay `unresolved` except the non-JSON 422 starting with "Failed to deserialize the JSON body".** |
-| 429 | rate limit; `retry-after` not documented | `rate_limit_exceeded`, `too_many_requests` → `rate_limit`; `quota_exceeded` → `quota` | per F4 / F8 | F4 rule | one row per attempt; $0 `assumed_zero_429` |
+| 429 | rate limit; `retry-after` not documented | `rate_limit_exceeded`, `too_many_requests` → `rate_limit`; `quota_exceeded` → `quota` | per F4 / F8 | F4 rule | one row per attempt; $0 `assumed_zero_429` **In A1 (§7 pin 1): xAI stays `unresolved` here and counts against the cap until P7 is decided.** |
 | 499 / 504 | — | `cancelled`, `deadline_exceeded` | `timeout` (F3) | none | `unresolved` |
 | 500 / 502 / 503 | not documented on the debugging page | `api_error`, `service_unavailable` | `unavailable` (F5) | none | usage if present, else `unresolved` |
 | No response in 120 s | — | — | `timeout` (F3) | none | `unresolved` |
@@ -269,7 +269,7 @@ Views:
 
 ## 4. Changes to the build order (section 9, T:188-224)
 
-- **A0 close-out (runs alongside A1; it no longer has to finish first, per Michael on Oct 7: "Do what you need to do to get this going faster").** A0 stays open until the items below are done. Until Michael rules, A1 builds each open item behind its switch at this default: P1 as the name-list check that fails closed (line 278); P7 as the spike's narrow rule: only an xAI 422 whose body is not JSON and starts with "Failed to deserialize the JSON body" settles at $0 `assumed_zero_rejected`; every other xAI rejection, meaning a 400 that passes the free key re-check, a 404, 405 or 415, and any 422 whose body is JSON or starts differently, stays `unresolved`, counts against the cap at its reserved estimate (§3.4), and stays on the reconcile list (this holds back the wider $0 rule in item 16 (line 59), F6 (line 189) and the xAI map rows at lines 226, 230 and 231 until P7 is decided; each of those rows points here); P4 at A (no xAI zero data retention); P6 at A (the measured quality setting); P5 at A (`1k_upscale`), so every A1 generation and edit asks for 1K. P3 is A6 work and P8 is spike-only, so neither touches A1. If Michael rules differently, only the switch changes.
+- **A0 close-out (runs alongside A1; it no longer has to finish first, per Michael on Oct 7: "Do what you need to do to get this going faster").** A0 stays open until the items below are done. Until Michael rules, A1 builds each open item behind its switch at this default: P1 as the name-list check that fails closed (line 278); P7 as the spike's narrow rule: only an xAI 422 whose body is not JSON and starts with "Failed to deserialize the JSON body" settles at $0 `assumed_zero_rejected`; every other xAI rejection, meaning a 400 that passes the free key re-check, a 404, 405 or 415, any 422 whose body is JSON or starts differently, and a 401, 402, 403 or 429 (§7 pin 1), stays `unresolved`, counts against the cap at its reserved estimate (§3.4), and stays on the reconcile list (this holds back the wider $0 rule in item 16 (line 59), F6 (line 189) and the xAI map rows at lines 226-232 until P7 is decided; each of those rows points here or to §7); P4 at A (no xAI zero data retention); P6 at A (the measured quality setting); P5 at A (`1k_upscale`), so every A1 generation and edit asks for 1K. P3 is A6 work and P8 is spike-only, so neither touches A1. If Michael rules differently, only the switch changes.
   - Michael's console check (item 21) and resolution of the 422 reservation.
   - Michael decides P1, P3, P4, P5, P6, P7 and P8 (section 2.2). D1–D4 are already in `FOUNDER-DECISIONS.md` (FD:11-14).
   - A0b (local models) stays deferred until the Linux PC is built (FD:4).
@@ -343,3 +343,23 @@ Views:
   - https://ai.google.dev/gemini-api/docs/api-key
   - https://ai.google.dev/gemini-api/docs/zdr
   - https://ai.google.dev/api/models
+---
+
+## 7. A1 interim pins (Wednesday, October 7, 2026, about 11:30 PM ET)
+
+Hephaestus listed 14 interim choices in A1 at branch `a1-skeleton` head `28ee064` (on `main` `1338b7a`), in `/workspace/red-social-room-logs/a1-open-questions.md`. Each is pinned below for A1. Numbers follow that file. Where a pin narrows or departs from a row above, it says so.
+
+1. **xAI 401, 402, 403 and 429 stay `unresolved` and count against the cap** until P7 is decided. This departs from the $0 in §3.3 rows 227-229 and 232 for xAI only; Google rows arrive in A2. 5xx already follows line 234.
+2. **P6: no quality field is sent**, because xAI's API spec has none. Generations are priced at the measured default, `low` at 1K; the live A1 call billed 400000000 ticks ($0.04, request `cb478eea-cf55-96df-bc20-38346f7f013b`). This replaces item 2(c)'s "always send it" for A1. The `medium` edit half of P6 option A waits for edits in A3.
+3. **Keys:** from `.env` or a write-only Settings form. The server stores a form-entered key at mode 600 under the data folder (never in the repo or image), never returns it, never logs it, and Settings shows only the last 4 characters. This satisfies T:200.
+4. **Retries:** rebuilt in the adapter, with one ledger row and one cap check per attempt (§3.4, line 232).
+5. **Ledger shape:** the extra columns (resolution, quality, import source) and no foreign key to generations are fine, since imported and prompt-check rows have no generation. §3.4's append-only rule still holds. The library saves the 4:5 crop and keeps the 3:4 original (D2).
+6. **Storage:** `data/images/<aa>/<sha256>.<ext>` and `data/db/rsr.sqlite`, mounted as the plan's `/data`. Image writes stay temp file, fsync, rename (T:76).
+7. **No job queue in A1:** one request waits for its result. The queue arrives in A2 (T:203). Search covers prompt, notes and model; captions and tags join when they exist.
+8. **Spike import:** once, on first start, in one transaction, never repeated. It includes the A1 smoke-call row from pin 14.
+9. **Name list:** one seed name; an empty or unreadable list blocks the prompt (P1c, fail closed). Filling it is P1a, Michael's.
+10. **Key check:** 20 s timeout; runs at start, on key save, from the Check button, and again before the next paid call after any auth, quota or billing error (item 19).
+11. **Cap:** editable in Settings, as F20's message already says. The default is $50 (FD:5).
+12. **Cross-site guard:** every POST needs the `x-rsr` header; the test-only xAI address override accepts only loopback addresses.
+13. **Switches:** a value that is not built stops the app at startup. Built values: P1 block or send_labeled; P7 narrow or the item 16 rule; P4 default or ZDR; P5 1K only; P6 current setting only.
+14. **Live $0.04 call:** seeded as one imported row beside the 10 spike rows (`billed_provider`, request `cb478eea-cf55-96df-bc20-38346f7f013b`, `imported_from` `a1-live-smoke.out`). The import test asserts $0.5547 from the spike rows and $0.5947 for October. This updates the §4 A1 acceptance test "the October total after import equals the spike ledger" to add this one row.
