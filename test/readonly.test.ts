@@ -393,3 +393,51 @@ test("Argus N13 on 5ea231d: any other lock failure names the SQLite result code,
     assert.throws(() => acquireDataDirLock(dir), (e: unknown) => e instanceof DataDirLockFailed && /\(SQLite result code 26\)/.test((e as Error).message) && !/not a database/.test((e as Error).message));
   } finally { cleanup(dir); }
 });
+
+// --- Argus L1 on 3bbbe97: a folder that can be written but not read -------------------------------------------------
+
+test("Argus L1 on 3bbbe97: the exact images/<xx>/ shard is 0333 (writable, not readable; the store opens it for reading to fsync) - the paid call refuses before the provider: zero calls, no ledger row, no run, no orphan file", async () => {
+  const x = fakeXai();
+  const t = makeApp({ fetch: x.fetch });
+  const shard = join(t.app.imagesDir, createHash("sha256").update(await sampleJpeg()).digest("hex").slice(0, 2));
+  mkdirSync(shard, { recursive: true });
+  chmodSync(shard, 0o333);
+  try {
+    const runs = () => Number((t.app.db.prepare("SELECT COUNT(*) AS n FROM runs").get() as { n: number }).n);
+    const before = runs();
+    await assert.rejects(runGenerate(t.app, { prompt: "a lighthouse at dusk", ratio: "1:1" }), (e: unknown) => notWritable(e) && (e as Error).message.includes(`cannot read and write ${shard}`));
+    assert.equal(x.requests.length, 0, "the fake provider recorded zero calls");
+    assert.equal(ledgerRows(t.app).length, 0);
+    assert.equal(runs(), before);
+    chmodSync(shard, 0o755);
+    assert.deepEqual(readdirSync(shard), [], "no orphan image file, no probe file");
+    assert.equal((await runGenerate(t.app, { prompt: "a lighthouse at dusk", ratio: "1:1" })).status, "ok");
+  } finally { try { chmodSync(shard, 0o755); } catch { /* gone */ } t.cleanup(); }
+});
+
+test("Argus L1 on 3bbbe97: an images/ that cannot be listed (0333) refuses - in checkWritable and in checkImageShards itself - and never skips the subfolder checks", () => {
+  const t = makeApp({ fetch: fakeXai().fetch });
+  const images = t.app.imagesDir;
+  try {
+    mkdirSync(join(images, "51"), { recursive: true });
+    chmodSync(join(images, "51"), 0o555); // a read-only subfolder hidden behind the unlistable images/
+    chmodSync(images, 0o333);
+    assert.throws(() => checkWritable(t.dir), (e: unknown) => notWritable(e) && (e as Error).message.includes(images));
+    assert.throws(() => checkImageShards(t.dir, images), (e: unknown) => notWritable(e) && (e as Error).message.includes(`cannot list ${images}`));
+  } finally { try { chmodSync(images, 0o755); chmodSync(join(images, "51"), 0o755); } catch { /* gone */ } t.cleanup(); }
+});
+
+test("Argus L1 on 3bbbe97: the read/write/search check applies to every probed folder - data directory, db/, images/ and secrets/ at 0333 each refuse", () => {
+  const t = makeApp({ fetch: fakeXai().fetch });
+  try {
+    t.app.keys.save(DUMMY_KEY.replace("eSnz", "Xx7p")); // creates secrets/
+    checkWritable(t.dir); // creates db/ and images/
+    for (const d of [t.dir, join(t.dir, "db"), join(t.dir, "images"), join(t.dir, "secrets")]) {
+      const before = statSync(d).mode & 0o7777;
+      chmodSync(d, 0o333);
+      try { assert.throws(() => checkWritable(t.dir, [join(t.dir, "secrets")]), (e: unknown) => notWritable(e) && (e as Error).message.includes(`cannot read and write ${d}`), d); }
+      finally { chmodSync(d, before); }
+    }
+    checkWritable(t.dir, [join(t.dir, "secrets")]);
+  } finally { t.cleanup(); }
+});

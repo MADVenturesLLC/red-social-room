@@ -397,6 +397,40 @@ test("A1 pin 19 (d) gap 1 (Surface ruling, Oct 8 ~3:37 AM ET): only the images/<
   assert.equal(g.status, "ok", JSON.stringify(g));
 });
 
+test("Argus L1 on 3bbbe97: the images/<xx>/ shard the next image would be saved to is 0333 (writable, not readable) - a paid POST returns 500 with the not-writable message, zero provider calls, no ledger/run/generation row, no orphan file", async () => {
+  assert.notEqual(process.getuid?.(), 0, "must not run as root: root ignores chmod, so nothing would be blocked");
+  const shard = join(dataDir, "images", createHash("sha256").update(await sampleJpeg()).digest("hex").slice(0, 2));
+  const counts = () => { const db = new DatabaseSync(join(dataDir, "db", "rsr.sqlite")); try { return ["spend_ledger", "runs", "generations"].map((t) => Number((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n)); } finally { db.close(); } };
+  const rowsBefore = counts(), providerCalls = mockSeen.length, mode = statSync(shard).mode & 0o7777, files = readdirSync(shard).sort();
+  chmodSync(shard, 0o333);
+  try {
+    const res = await post("/api/generate", { prompt: "a lighthouse at dusk, unreadable shard", ratio: "1:1" });
+    const text = await record("POST /api/generate (0333 image shard)", res);
+    assert.equal(res.status, 500, text);
+    assert.deepEqual(JSON.parse(text), { error: NOT_WRITABLE_MESSAGE, code: "data_dir_not_writable" });
+    assert.equal(mockSeen.length, providerCalls, "the fake provider recorded zero calls");
+    assert.deepEqual(counts(), rowsBefore, "no ledger row, run or generation was written");
+  } finally { chmodSync(shard, mode); }
+  assert.deepEqual(readdirSync(shard).sort(), files, "no orphan file");
+});
+
+test("Argus L1 on 3bbbe97: images/ cannot be listed (0333) - a paid POST returns 500 with the not-writable message, zero provider calls, no ledger/run/generation row; the folder checks are never skipped", async () => {
+  assert.notEqual(process.getuid?.(), 0, "must not run as root: root ignores chmod, so nothing would be blocked");
+  const images = join(dataDir, "images");
+  const counts = () => { const db = new DatabaseSync(join(dataDir, "db", "rsr.sqlite")); try { return ["spend_ledger", "runs", "generations"].map((t) => Number((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n)); } finally { db.close(); } };
+  const rowsBefore = counts(), providerCalls = mockSeen.length, mode = statSync(images).mode & 0o7777, files = readdirSync(images, { recursive: true }).map(String).sort();
+  chmodSync(images, 0o333);
+  try {
+    const res = await post("/api/generate", { prompt: "a lighthouse at dusk, unlistable images folder", ratio: "1:1" });
+    const text = await record("POST /api/generate (images/ 0333)", res);
+    assert.equal(res.status, 500, text);
+    assert.deepEqual(JSON.parse(text), { error: NOT_WRITABLE_MESSAGE, code: "data_dir_not_writable" });
+    assert.equal(mockSeen.length, providerCalls, "the fake provider recorded zero calls");
+    assert.deepEqual(counts(), rowsBefore, "no ledger row, run or generation was written");
+  } finally { chmodSync(images, mode); }
+  assert.deepEqual(readdirSync(images, { recursive: true }).map(String).sort(), files, "no new image or probe file");
+});
+
 /** Start `next start` and wait for it to exit (at most ~30 s); returns the exit code (undefined if it kept running) and its output. */
 async function startAndAwaitExit(env: NodeJS.ProcessEnv, p: number): Promise<{ code: number | null | undefined; out: string }> {
   const child = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(p), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env, stdio: ["ignore", "pipe", "pipe"] });

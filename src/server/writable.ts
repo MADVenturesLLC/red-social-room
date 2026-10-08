@@ -23,7 +23,16 @@ export const NOT_WRITABLE_SAVE_MESSAGE = "The data directory is not writable, so
 export const DB_RELPATH = join("db", "rsr.sqlite");
 export const SHARD_RE = /^[0-9a-f]{2}$/;
 
+/**
+ * Argus L1 on 3bbbe97: the folder must also be readable. Creating and deleting a file needs only write and search
+ * permission, but the stores open their folder for reading to fsync it after a save (store.ts and keys.ts openSync(dir, "r");
+ * SQLite syncs its db/ folder the same way), so a 0333 folder passed the probe and the save failed after billing.
+ * So read, write and search permission are checked first, then a real file is created and deleted.
+ */
 function probeDir(dataDir: string, d: string): void {
+  try { accessSync(d, constants.R_OK | constants.W_OK | constants.X_OK); } catch (e) {
+    throw new DataDirNotWritable(dataDir, `cannot read and write ${d}, ${(e as NodeJS.ErrnoException).code ?? "error"}`, e);
+  }
   const probe = join(d, `.rsr-write-check.${process.pid}.${randomBytes(4).toString("hex")}`);
   try {
     writeFileSync(probe, "", { flag: "wx", mode: 0o600 });
@@ -42,6 +51,7 @@ function probeDir(dataDir: string, d: string): void {
  * 256 folders; nothing is created ahead of time.
  */
 export function checkImageShards(dataDir: string, imagesDir: string): void {
+  // An images/ that cannot be listed refuses (never skips the folder checks).
   let names: string[];
   try { names = readdirSync(imagesDir); } catch (e) {
     throw new DataDirNotWritable(dataDir, `cannot list ${imagesDir}, ${(e as NodeJS.ErrnoException).code ?? "error"}`, e);
