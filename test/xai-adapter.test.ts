@@ -410,11 +410,13 @@ for (const [term, body] of [
 // A1 pin 18 (c), line 369 (Amendment 1 at 5c773d7): words match anywhere, even inside longer words; "credit"/"credits"
 // must not be followed by a letter (an underscore, digit, space, punctuation or the end of the body may follow);
 // "spending limit" and "insufficient funds" take a space, underscore, hyphen or nothing between the words.
-test("A1 pin 18 (c), line 369: quota-word boundaries - inside longer words, credit/credits not followed by a letter, separators", () => {
+// A1 pin 19 (c), line 370 (Amendment 1 at 9a890fb): exactly one space, underscore or hyphen, or none; two spaces, a tab
+// and camelCase such as creditLimit do not match.
+test("A1 pin 18 (c), line 369 / A1 pin 19 (c), line 370: quota-word boundaries - inside longer words, credit/credits not followed by a letter, separators", () => {
   const yes = ["rebalance needed", "QUOTAS", "prepayment", "rebilling", "credit", "credits", "Credit.", "no credits!", "discredit", "credit limit",
     "credit_limit", "credit_limit_exceeded", "credits_exhausted", "CREDIT_LIMIT", "credit2", "credit-limit", "out_of_credits", "{\"code\":\"credit\"}",
     "spending limit", "spending_limit", "spending-limit", "spendinglimit", "SPENDING-LIMIT", "insufficient funds", "insufficient_funds", "insufficient-funds", "insufficientfunds"];
-  const no = ["creditor", "CREDITORS", "credited", "creditworthy", "creditLimit", "spending  limit", "insufficient  funds", "spending/limit", "funds insufficient"];
+  const no = ["creditor", "CREDITORS", "credited", "creditworthy", "creditLimit", "CreditLimit", "spending  limit", "insufficient  funds", "spending\tlimit", "insufficient\tfunds", "spending__limit", "insufficient--funds", "spending/limit", "funds insufficient"];
   for (const b of yes) assert.equal(QUOTA_429_RE.test(b), true, `should match: ${b}`);
   for (const b of no) assert.equal(QUOTA_429_RE.test(b), false, `should not match: ${b}`);
 });

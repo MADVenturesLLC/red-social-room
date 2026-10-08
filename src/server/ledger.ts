@@ -166,9 +166,10 @@ export function recordLateResult(db: DB, id: string, r: LateResult): { status: s
       actual_micro_usd: r.actualMicros, cost_source: r.costSource, reason: r.reason, note: r.note,
     }));
     if (row?.status === "unresolved" && r.actualMicros !== null && Number.isSafeInteger(r.actualMicros) && r.actualMicros >= 0) {
-      // Kept in cost_detail (item 18, line 61: "detail" may change); spend_counted reads it. Never lowered.
+      // Kept in cost_detail (item 18, line 61: "detail" may change); spend_counted reads it. Never lowered. Stored as a
+      // JSON integer (node:sqlite binds JS numbers as REAL; the late-bill trigger refuses anything but a whole number).
       db.prepare(`UPDATE spend_ledger SET cost_detail = json_set(CASE WHEN json_valid(cost_detail) THEN cost_detail ELSE json_object('previous_detail', cost_detail) END,
-        '$.late_micro_usd', MAX(COALESCE(CASE WHEN json_valid(cost_detail) THEN json_extract(cost_detail, '$.late_micro_usd') END, 0), ?)) WHERE id = ? AND status = 'unresolved'`).run(r.actualMicros, id);
+        '$.late_micro_usd', CAST(MAX(COALESCE(CASE WHEN json_valid(cost_detail) THEN json_extract(cost_detail, '$.late_micro_usd') END, 0), ?) AS INTEGER)) WHERE id = ? AND status = 'unresolved'`).run(r.actualMicros, id);
     }
     const now = db.prepare("SELECT status, counted_micro_usd AS c, actual_micro_usd AS act, cost_source FROM spend_counted WHERE id = ?").get(id) as
       { status: string; c: number; act: number | null; cost_source: string | null } | undefined;

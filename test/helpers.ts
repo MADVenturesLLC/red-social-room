@@ -93,6 +93,7 @@ export function makeApp(o: { fetch: FetchLike; switches?: Partial<Switches> & Re
     random: () => 0.5,
     log: (m) => logs.push(m),
     keyCheck: { fingerprint: null, ok: false, versionListing: null },
+    dataDir: dir,
     imagesDir: join(dir, "images"),
     promptMethod: nameListMethod(namesFile),
   };

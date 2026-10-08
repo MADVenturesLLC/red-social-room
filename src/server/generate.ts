@@ -6,10 +6,11 @@ import { isoNY } from "../../spike/lib/ledger.ts";
 import { checkPrompt, type PromptCheckMethod } from "./prompt-check.ts";
 import { generate as xaiGenerate, MODEL, type XaiDeps, type CostInfo } from "./xai/adapter.ts";
 import { putImage, cropTo, StoreError, type StoredImage } from "./store.ts";
+import { checkWritable } from "./writable.ts";
 import { fmtUsd } from "./ledger.ts";
 import { tx, type DB } from "./db.ts";
 
-export interface AppDeps extends XaiDeps { imagesDir: string; promptMethod: PromptCheckMethod }
+export interface AppDeps extends XaiDeps { dataDir: string; imagesDir: string; promptMethod: PromptCheckMethod }
 
 export interface GenerateView {
   generationId: string;
@@ -53,6 +54,10 @@ export async function runGenerate(d: AppDeps, input: { prompt: unknown; ratio: u
         extra.model_version_listing ?? null, extra.output_asset_id ?? null, extra.display_asset_id ?? null, extra.display_note ?? null, extra.latency_ms ?? null);
     });
   };
+
+  // 0) A1 pin 19 (d), line 370: no paid call unless the data directory and database are writable (throws
+  //    DataDirNotWritable; the route answers 500 with NOT_WRITABLE_MESSAGE). Nothing is recorded or sent.
+  checkWritable(d.dataDir);
 
   // 1) Real-person check (D1, F10). A block or an unavailable check sends nothing and creates no ledger row.
   const pc = checkPrompt(prompt, d.promptMethod, d.switches.promptCheck, d.db);

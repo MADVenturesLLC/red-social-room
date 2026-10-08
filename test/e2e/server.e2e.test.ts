@@ -8,12 +8,14 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { connect } from "node:net";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPO_ROOT } from "../../src/server/config.ts";
 import { DUMMY_KEY, sampleJpeg, secretNeedles } from "../helpers.ts";
 import { HOST_REFUSED_BODY } from "../../src/server/hosts.ts";
+import { NOT_WRITABLE_MESSAGE } from "../../src/server/writable.ts";
 
 const OTHER = "dummy_TESTONLY2_YN37HqzjWJUVBEzSe0yEx85UHWPO5NEramEpLdk3wQs5ingajTDuNgrguPUC";
 const GEMINI_DUMMY = "dummyg_TESTONLY_4zxmPjPWZezkrrbewFcerUGlX2tQCAOIkSoD1AiaLJ2fRTUFTqbz82x8FgwD";
@@ -333,6 +335,95 @@ test("POSTs without the same-origin header, or marked cross-site, are refused be
 
 test("asset route only serves stored hashes (no path traversal)", async () => {
   for (const p of ["..%2F..%2Fdb%2Frsr.sqlite", "0".repeat(64), "abc"]) assert.equal((await fetch(`${base}/api/assets/${p}`)).status, 404, p);
+});
+
+// A1 pin 19 (d), line 370 (Amendment 1 at 9a890fb). Real read-only modes (dirs 0555, files 0444); the suite runs as a
+// non-root user (asserted), since root ignores the mode bits.
+function makeReadOnly(root: string): () => void {
+  const saved: Array<[string, number]> = [];
+  const walk = (p: string) => {
+    const st = statSync(p);
+    saved.push([p, st.mode & 0o7777]);
+    if (st.isDirectory()) { for (const n of readdirSync(p)) walk(join(p, n)); chmodSync(p, 0o555); } else chmodSync(p, 0o444);
+  };
+  walk(root);
+  return () => { for (const [p, m] of saved.reverse()) chmodSync(p, m); };
+}
+
+test("A1 pin 19 (d), line 370: data directory and database made read-only after the server started - a paid POST returns 500 saying the data directory is not writable, the fake provider records zero calls, and the server keeps running", async () => {
+  assert.notEqual(process.getuid?.(), 0, "must not run as root: root ignores chmod, so nothing would be read-only");
+  const before = (await (await fetch(`${base}/api/status`)).json()) as { totals: { countedMicros: number } };
+  const providerCalls = mockSeen.length, images = IMAGES_COUNT();
+  const rowsBefore = (() => { const db = new DatabaseSync(join(dataDir, "db", "rsr.sqlite")); try { return ["spend_ledger", "runs", "generations"].map((t) => Number((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n)); } finally { db.close(); } })();
+  const restore = makeReadOnly(dataDir);
+  try {
+    const res = await post("/api/generate", { prompt: "a lighthouse at dusk, read-only", ratio: "1:1" });
+    const text = await record("POST /api/generate (read-only data directory)", res);
+    assert.equal(res.status, 500, text);
+    assert.deepEqual(JSON.parse(text), { error: NOT_WRITABLE_MESSAGE, code: "data_dir_not_writable" });
+    assert.match(text, /The data directory is not writable/);
+    assert.equal(mockSeen.length, providerCalls, "the fake provider recorded zero calls");
+    const status = await fetch(`${base}/api/status`);
+    assert.equal(status.status, 200, "the server is still running");
+    assert.equal(((await status.json()) as { totals: { countedMicros: number } }).totals.countedMicros, before.totals.countedMicros, "no ledger change");
+    assert.equal(IMAGES_COUNT(), images, "no file");
+    assert.equal(server.exitCode, null);
+  } finally { restore(); }
+  const counts = () => { const db = new DatabaseSync(join(dataDir, "db", "rsr.sqlite")); try { return ["spend_ledger", "runs", "generations"].map((t) => Number((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n)); } finally { db.close(); } };
+  assert.deepEqual(counts(), rowsBefore, "no ledger row, run or generation was written");
+  // Writable again: the next paid POST goes through on the same server.
+  const g = JSON.parse(await (await post("/api/generate", { prompt: "a lighthouse at dusk, writable again", ratio: "1:1" })).text());
+  assert.equal(g.status, "ok", JSON.stringify(g));
+});
+
+/** Start `next start` and wait for it to exit (at most ~30 s); returns the exit code (undefined if it kept running) and its output. */
+async function startAndAwaitExit(env: NodeJS.ProcessEnv, p: number): Promise<{ code: number | null | undefined; out: string }> {
+  const child = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(p), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout?.on("data", (c) => { out += c; }); child.stderr?.on("data", (c) => { out += c; });
+  const exited = new Promise<number | null>((r) => child.on("exit", (code) => r(code)));
+  let code: number | null | undefined;
+  for (let i = 0; i < 150 && code === undefined; i++) {
+    code = await Promise.race([exited, new Promise<undefined>((r) => setTimeout(() => r(undefined), 200))]);
+    if (code === undefined) { try { await fetch(`http://127.0.0.1:${p}/api/status`); } catch { /* not up, or already gone */ } }
+  }
+  if (code === undefined) { child.kill("SIGKILL"); await exited; }
+  return { code, out };
+}
+
+test("A1 pin 19 (d), line 370 (Argus L1 and L3 on 0e2f1f4): starting the server on a read-only data directory (new and empty, or left by a previous run), or with a read-only rsr.lock in a writable one, exits 1 with 'The data directory is not writable', never 'another server holds the lock' and never SQLite's own text", async () => {
+  assert.notEqual(process.getuid?.(), 0, "must not run as root: root ignores chmod, so nothing would be read-only");
+  const fresh = mkdtempSync(join(tmpdir(), "rsr-e2e-ro-new-"));
+  const used = mkdtempSync(join(tmpdir(), "rsr-e2e-ro-used-"));
+  const lockRo = mkdtempSync(join(tmpdir(), "rsr-e2e-ro-lock-"));
+  const appTs = pathToFileURL(join(REPO_ROOT, "src", "server", "app.ts")).href;
+  // A previous run: the real app start leaves rsr.lock, db/ (with the database) and images/ behind.
+  for (const d of [used, lockRo]) {
+    const prev = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", `import { startApp } from ${JSON.stringify(appTs)}; startApp(); process.exit(0);`],
+      { env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "/tmp", RSR_DATA_DIR: d }, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+    assert.equal(prev.status, 0, prev.stderr);
+    assert.ok(readdirSync(d).includes("rsr.lock") && readdirSync(d).includes("db"), readdirSync(d).join(","));
+  }
+  const lockMode = statSync(join(lockRo, "rsr.lock")).mode & 0o7777;
+  const restores = [makeReadOnly(fresh), makeReadOnly(used)];
+  chmodSync(join(lockRo, "rsr.lock"), 0o444); // only the lock file; the directory, db/ and images/ stay writable
+  restores.push(() => chmodSync(join(lockRo, "rsr.lock"), lockMode));
+  try {
+    let k = 0;
+    for (const [label, dir] of [["new, empty, 0555", fresh], ["left by a previous run, 0555/0444", used], ["writable, but rsr.lock 0444", lockRo]] as const) {
+      const providerCalls = mockSeen.length;
+      const { code, out } = await startAndAwaitExit({ ...startEnv, RSR_DATA_DIR: dir }, port + 700 + k++);
+      assert.equal(code, 1, `${label}: the server must exit 1:\n${out}`);
+      assert.match(out, /refusing to start: The data directory is not writable: /, label);
+      assert.ok(out.includes(join(dir, "rsr.lock")), `${label}: names the lock file:\n${out}`);
+      assert.doesNotMatch(out, /Another Red Social Room server|already using the data directory/, label);
+      assert.doesNotMatch(out, /unable to open database file|attempt to write a readonly database|Failed to prepare server/, label);
+      assert.equal(mockSeen.length, providerCalls, `${label}: no provider call (not even the free key check)`);
+    }
+  } finally {
+    for (const r of restores) r();
+    for (const d of [fresh, used, lockRo]) rmSync(d, { recursive: true, force: true });
+  }
 });
 
 test("no response body or header, and no built browser file, contains any key (full, base64, or 12-char fragment)", async () => {

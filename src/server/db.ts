@@ -134,6 +134,21 @@ CREATE TRIGGER IF NOT EXISTS spend_ledger_late_bill BEFORE UPDATE OF cost_detail
 BEGIN
   SELECT RAISE(ABORT, 'spend_ledger: a late bill is never lowered or removed before reconcile');
 END;
+-- Argus note to Surface on 0e2f1f4: a late bill must be a whole, non-negative number of micro-dollars. A hand edit
+-- that stored text or a fraction would sort above every number in MAX() and count as $0 in SUM(); refuse it.
+-- New trigger names, so databases created before this get them at the next start too (CREATE ... IF NOT EXISTS).
+CREATE TRIGGER IF NOT EXISTS spend_ledger_late_bill_integer BEFORE UPDATE OF cost_detail ON spend_ledger
+  WHEN NEW.status <> 'settled' AND json_valid(NEW.cost_detail) AND json_type(NEW.cost_detail, '$.late_micro_usd') IS NOT NULL
+    AND (json_type(NEW.cost_detail, '$.late_micro_usd') <> 'integer' OR json_extract(NEW.cost_detail, '$.late_micro_usd') < 0)
+BEGIN
+  SELECT RAISE(ABORT, 'spend_ledger: a late bill must be a whole, non-negative number of micro-dollars');
+END;
+CREATE TRIGGER IF NOT EXISTS spend_ledger_late_bill_integer_insert BEFORE INSERT ON spend_ledger
+  WHEN json_valid(NEW.cost_detail) AND json_type(NEW.cost_detail, '$.late_micro_usd') IS NOT NULL
+    AND (json_type(NEW.cost_detail, '$.late_micro_usd') <> 'integer' OR json_extract(NEW.cost_detail, '$.late_micro_usd') < 0)
+BEGIN
+  SELECT RAISE(ABORT, 'spend_ledger: a late bill must be a whole, non-negative number of micro-dollars');
+END;
 CREATE TRIGGER IF NOT EXISTS spend_ledger_settled_final BEFORE UPDATE ON spend_ledger WHEN OLD.status = 'settled' BEGIN
   SELECT RAISE(ABORT, 'spend_ledger: a settled row is final');
 END;

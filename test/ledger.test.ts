@@ -306,3 +306,32 @@ test("A1 pin 18, line 369: a database whose spend_counted view predates pin 18 g
     db.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("A1 pin 19 (b), line 370 (Amendment 1 at 9a890fb): a late bill raises no price-drift notice and does not raise the next estimate; both use settled rows only", () => {
+  const db = openDb(":memory:", { spikeLedgerPath: null });
+  const prices = loadPrices();
+  const k = { provider: "xai" as const, model: base.model, kind: base.kind, resolution: base.resolution, quality: base.quality };
+  const before = estimate(db, prices, k);
+  const id = sweptRow(db);
+  assert.equal(recordLateResult(db, id, late(900000)).countedMicros, 900000, "the cap counts the $0.90 late bill (pin 18 (a))");
+  assert.deepEqual(priceDrifts(db), [], "no price-drift notice for a late bill");
+  assert.equal(Number((db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind = 'price_drift'").get() as { n: number }).n), 0);
+  assert.deepEqual(estimate(db, prices, k), before, "the next estimate is unchanged by the late bill");
+  // Control: the same $0.90 on a settled row does raise both (so the check above can fail).
+  const r = reserve(db, { ...base, estimateMicros: before.micros, now: OCT });
+  settle(db, r.id, { actualMicros: 900000, costSource: "billed_provider", httpStatus: 200, outcome: "ok" });
+  assert.equal(priceDrifts(db).length, 1);
+  assert.equal(estimate(db, prices, k).micros, 900000);
+});
+
+test("Argus note on 0e2f1f4 (A1 pin 18 (a) / 19 (a)): the database refuses a late bill that is text, a fraction, negative or null, so a hand edit cannot make the row count $0; a whole number is accepted", () => {
+  const db = openDb(":memory:", { spikeLedgerPath: null });
+  const id = sweptRow(db);
+  for (const bad of ["'\"90000\"'", "'90000.5'", "'-1'", "'null'", "'\"abc\"'"]) {
+    assert.throws(() => db.prepare(`UPDATE spend_ledger SET cost_detail = json_set(cost_detail, '$.late_micro_usd', json(${bad})) WHERE id = ?`).run(id), /whole, non-negative number of micro-dollars/, bad);
+  }
+  assert.throws(() => db.prepare("INSERT INTO spend_ledger (id, created_at, month_ny, provider, model, kind, generation_id, attempt, estimate_micro_usd, estimate_source, status, cost_detail) SELECT 'x2', created_at, month_ny, provider, model, kind, generation_id, 9, estimate_micro_usd, estimate_source, 'unresolved', '{\"late_micro_usd\":\"5\"}' FROM spend_ledger WHERE id = ?").run(id), /whole, non-negative number/);
+  assert.equal(monthTotals(db, "2026-10").countedMicros, 40000, "the row still counts its estimate");
+  db.prepare("UPDATE spend_ledger SET cost_detail = json_set(cost_detail, '$.late_micro_usd', 90000) WHERE id = ?").run(id);
+  assert.equal(monthTotals(db, "2026-10").countedMicros, 90000);
+});

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { dataDir, loadSwitches, REPO_ROOT } from "./config.ts";
 import { openDb } from "./db.ts";
 import { markInterrupted } from "./ledger.ts";
-import { acquireDataDirLock, DataDirLocked } from "./lock.ts";
+import { acquireDataDirLock, DataDirLocked, DataDirLockFailed, DataDirNotWritable, isNotWritable } from "./lock.ts";
+import { checkWritable, DB_RELPATH } from "./writable.ts";
 import { KeyStore } from "./keys.ts";
 import { loadPrices } from "./prices.ts";
 import { nameListMethod } from "./prompt-check.ts";
@@ -26,11 +27,19 @@ export function getApp(): AppDeps {
   if (g.__rsrApp) return g.__rsrApp;
   const dir = dataDir();
   // Argus L1 on f63676e: one server per data directory, taken before the database is opened or swept.
+  // A1 pin 19 (d), line 370: if it cannot be taken (busy, or the directory is not writable) the server refuses to start.
   acquireDataDirLock(dir);
+  // A1 pin 19 (d): db/ and images/ must be writable at startup too; otherwise refuse to start with the same message.
+  checkWritable(dir);
+  let db: ReturnType<typeof openDb>;
+  try { db = openDb(join(dir, DB_RELPATH)); } catch (e) {
+    if (isNotWritable(e)) throw new DataDirNotWritable(dir, `cannot open ${join(dir, DB_RELPATH)} for writing`, e);
+    throw e;
+  }
   const keys = new KeyStore({ secretsDir: join(dir, "secrets") });
   const keyCheck: KeyCheckCache = { fingerprint: null, ok: false, versionListing: null };
   const app: AppDeps = {
-    db: openDb(join(dir, "db", "rsr.sqlite")),
+    db,
     keys,
     prices: loadPrices(),
     switches: loadSwitches(),
@@ -38,6 +47,7 @@ export function getApp(): AppDeps {
     baseUrl: xaiBaseUrlFromEnv(process.env.RSR_XAI_BASE_URL),
     timeoutMs: process.env.RSR_XAI_BASE_URL && process.env.RSR_TEST_TIMEOUT_MS ? Number(process.env.RSR_TEST_TIMEOUT_MS) : undefined,
     keyCheck,
+    dataDir: dir,
     imagesDir: join(dir, "images"),
     promptMethod: nameListMethod(join(REPO_ROOT, "config", "real-person-names.txt")),
     log: (m) => console.log(`[rsr] ${new Date().toISOString()} ${keys.scrub(m)}`),
@@ -54,12 +64,14 @@ export function getApp(): AppDeps {
 /**
  * Server start (src/instrumentation.ts): open the app right away so the data-directory lock is taken, and the
  * startup sweep runs, before any request. A second server on the same data directory exits with a clear error.
+ * A1 pin 19 (d), line 370 (Amendment 1 at 9a890fb): so does a server whose data directory is not writable, with a
+ * message saying so (DataDirNotWritable), never that another server holds the lock (DataDirLocked).
  */
 export function startApp(exit: (code: number) => void = (c) => process.exit(c)): AppDeps | null {
   try {
     return getApp();
   } catch (e) {
-    if (!(e instanceof DataDirLocked)) throw e;
+    if (!(e instanceof DataDirLocked || e instanceof DataDirNotWritable || e instanceof DataDirLockFailed)) throw e;
     console.error(`[rsr] refusing to start: ${e.message}`);
     exit(1);
     return null;

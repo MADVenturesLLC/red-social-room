@@ -53,6 +53,9 @@ test("lock: taking it in this process holds it and writes this pid; taking it ag
     assert.equal(p, join(dir, LOCK_FILE));
     assert.equal(readFileSync(join(dir, LOCK_PID_FILE), "utf8").trim(), String(process.pid));
     assert.equal(acquireDataDirLock(dir), p);
+    // An exclusive lock from the start (BEGIN EXCLUSIVE): another connection cannot even read rsr.lock while it is held.
+    const other = new DatabaseSync(p, { timeout: 0 });
+    try { assert.throws(() => other.prepare("SELECT COUNT(*) FROM sqlite_master").get(), (e: unknown) => (e as { errcode?: number }).errcode === 5); } finally { other.close(); }
     releaseDataDirLock(p);
     assert.equal(existsSync(join(dir, LOCK_PID_FILE)), false);
     releaseDataDirLock(p); // not held any more: no-op
