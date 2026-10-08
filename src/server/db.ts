@@ -124,13 +124,30 @@ CREATE TRIGGER IF NOT EXISTS spend_ledger_fixed_cols BEFORE UPDATE OF id, create
 BEGIN
   SELECT RAISE(ABORT, 'spend_ledger: only status, actual, source, detail, ids, settled_at and note may change');
 END;
+-- A1 pin 18, line 369 (Amendment 1 at 5c773d7): a late result's bill is kept in an unresolved row's cost_detail
+-- ("detail" is one of the fields item 18, line 61 lets change) as late_micro_usd. Before reconcile it never goes
+-- down or away, so the cap never counts less than was spent (FD:5). A2 reconcile settles the row; nothing here does.
+CREATE TRIGGER IF NOT EXISTS spend_ledger_late_bill BEFORE UPDATE OF cost_detail ON spend_ledger
+  WHEN NEW.status <> 'settled' AND json_valid(OLD.cost_detail) AND json_extract(OLD.cost_detail, '$.late_micro_usd') IS NOT NULL
+    AND (NOT json_valid(NEW.cost_detail) OR json_extract(NEW.cost_detail, '$.late_micro_usd') IS NULL
+      OR json_extract(NEW.cost_detail, '$.late_micro_usd') < json_extract(OLD.cost_detail, '$.late_micro_usd'))
+BEGIN
+  SELECT RAISE(ABORT, 'spend_ledger: a late bill is never lowered or removed before reconcile');
+END;
 CREATE TRIGGER IF NOT EXISTS spend_ledger_settled_final BEFORE UPDATE ON spend_ledger WHEN OLD.status = 'settled' BEGIN
   SELECT RAISE(ABORT, 'spend_ledger: a settled row is final');
 END;
 
 -- Counted amount = actual if settled, otherwise the estimate (reserved or unresolved). section 3.4 "Views".
+-- A1 pin 18, line 369 (and the pointers at item 18, line 61 and section 3.4 Views, line 263, Amendment 1 at 5c773d7):
+-- an unresolved row with a late bill counts the larger of its estimate and that bill (FD:5). Every total (cap check,
+-- month and per-provider totals, held amount, Unresolved list) reads counted_micro_usd from this one view.
 CREATE VIEW IF NOT EXISTS spend_counted AS
-  SELECT *, CASE WHEN status = 'settled' THEN actual_micro_usd ELSE estimate_micro_usd END AS counted_micro_usd FROM spend_ledger;
+  SELECT *, CASE WHEN json_valid(cost_detail) THEN json_extract(cost_detail, '$.late_micro_usd') END AS late_micro_usd,
+    CASE WHEN status = 'settled' THEN actual_micro_usd
+         WHEN status = 'unresolved' THEN MAX(estimate_micro_usd, COALESCE(CASE WHEN json_valid(cost_detail) THEN json_extract(cost_detail, '$.late_micro_usd') END, 0))
+         ELSE estimate_micro_usd END AS counted_micro_usd
+  FROM spend_ledger;
 CREATE VIEW IF NOT EXISTS spend_by_month AS
   SELECT month_ny, SUM(counted_micro_usd) AS counted_micro_usd FROM spend_counted GROUP BY month_ny;
 CREATE VIEW IF NOT EXISTS spend_by_month_provider AS
@@ -159,10 +176,19 @@ export function openDb(path: string, opts: { spikeLedgerPath?: string | null; se
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = FULL;");
+  migrateLedger(db);
   db.exec(SCHEMA);
   const spike = opts.spikeLedgerPath === undefined ? SPIKE_LEDGER_PATH : opts.spikeLedgerPath;
   importLedgerOnce(db, spike, opts.seeds ?? (spike ? LEDGER_SEEDS : []));
   return db;
+}
+
+/**
+ * A1 pin 18, line 369: the counting views are dropped so SCHEMA recreates them from this code on every start;
+ * a view kept from an older database would count a late bill at the estimate.
+ */
+function migrateLedger(db: DB): void {
+  db.exec("DROP VIEW IF EXISTS spend_by_month_provider; DROP VIEW IF EXISTS spend_by_month; DROP VIEW IF EXISTS spend_counted;");
 }
 
 /** Run fn inside BEGIN IMMEDIATE ... COMMIT (rolled back on throw). */

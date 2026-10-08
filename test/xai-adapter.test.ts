@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generate, QUOTA_429_RE } from "../src/server/xai/adapter.ts";
-import { markInterrupted, monthTotals } from "../src/server/ledger.ts";
+import { markInterrupted, monthTotals, unresolvedRows, unresolvedHeldText } from "../src/server/ledger.ts";
 import type { DB } from "../src/server/db.ts";
 import { appStatus } from "../src/server/status.ts";
 import { loadPrices } from "../src/server/prices.ts";
@@ -389,7 +389,7 @@ for (const body of ["QUOTA exceeded for this team", "Spending Limit reached", "B
   }, { gen: [text(429, body)] }));
 }
 
-// A1 pin 15, line 366 (at 0e1d324): "quota, billing, credit or credits, spending limit, insufficient funds, balance or
+// A1 pin 15, line 366 (Amendment 1 at 5c773d7): "quota, billing, credit or credits, spending limit, insufficient funds, balance or
 // payment, each word or phrase matched on its own (so "balance" alone matches)". Each body below holds exactly one
 // listed term; with that term taken out the body matches nothing, so each term is proven to match alone.
 for (const [term, body] of [
@@ -406,6 +406,25 @@ for (const [term, body] of [
     assert.equal(x.requests.filter((r) => r.path === "/v1/api-key").length, 2, "the key check re-ran before the next paid call");
   }, { gen: [text(429, body), () => genOk()] }));
 }
+
+// A1 pin 18 (c), line 369 (Amendment 1 at 5c773d7): words match anywhere, even inside longer words; "credit"/"credits"
+// must not be followed by a letter (an underscore, digit, space, punctuation or the end of the body may follow);
+// "spending limit" and "insufficient funds" take a space, underscore, hyphen or nothing between the words.
+test("A1 pin 18 (c), line 369: quota-word boundaries - inside longer words, credit/credits not followed by a letter, separators", () => {
+  const yes = ["rebalance needed", "QUOTAS", "prepayment", "rebilling", "credit", "credits", "Credit.", "no credits!", "discredit", "credit limit",
+    "credit_limit", "credit_limit_exceeded", "credits_exhausted", "CREDIT_LIMIT", "credit2", "credit-limit", "out_of_credits", "{\"code\":\"credit\"}",
+    "spending limit", "spending_limit", "spending-limit", "spendinglimit", "SPENDING-LIMIT", "insufficient funds", "insufficient_funds", "insufficient-funds", "insufficientfunds"];
+  const no = ["creditor", "CREDITORS", "credited", "creditworthy", "creditLimit", "spending  limit", "insufficient  funds", "spending/limit", "funds insufficient"];
+  for (const b of yes) assert.equal(QUOTA_429_RE.test(b), true, `should match: ${b}`);
+  for (const b of no) assert.equal(QUOTA_429_RE.test(b), false, `should not match: ${b}`);
+});
+
+test("A1 pin 18 (c), line 369: a 429 whose body is the code 'credit_limit_exceeded' is a quota 429 (F8: no retry)", withApp(async (t, x) => {
+  const out = await run(t);
+  assert.equal(out.kind === "error" && out.code, "quota");
+  assert.equal(x.posts().length, 1);
+  assert.deepEqual(t.sleeps, []);
+}, { gen: [text(429, "{\"error\":{\"code\":\"credit_limit_exceeded\"}}", "application/json")] }));
 
 test("A1 pin 15, line 366: a 429 with none of the listed words is a rate limit (F4), not quota", () => {
   for (const b of ["slow down", "Too many requests", "rate limit exceeded, retry later", "creditor"]) assert.equal(QUOTA_429_RE.test(b), false, b);
@@ -513,7 +532,7 @@ let sweepDb: DB | null = null;
 const sweepThen = (h: Handler): Handler => async (req, init) => { assert.equal(markInterrupted(sweepDb!), 1); return h(req, init); };
 const lateEvents = (t: ReturnType<typeof makeApp>) => (t.app.db.prepare("SELECT detail FROM events WHERE kind = 'late_result'").all() as Array<{ detail: string }>).map((e) => JSON.parse(e.detail));
 
-test("Argus L1 on f63676e: a bill that arrives after the row was swept is kept as a late_result event (request id, $0.04); the image is delivered, no 500, the row still counts its estimate", withApp(async (t) => {
+test("Argus L1 on f63676e / A1 pin 18, line 369: a bill that arrives after the row was swept is kept as a late_result event (request id, $0.04); the image is delivered, no 500, the row still counts its estimate", withApp(async (t) => {
   sweepDb = t.app.db;
   const out = await run(t);
   assert.equal(out.kind, "ok");
@@ -528,7 +547,59 @@ test("Argus L1 on f63676e: a bill that arrives after the row was swept is kept a
   assert.ok(t.logs.some((l) => /late result: row was already unresolved/.test(l)));
 }, { gen: [sweepThen(() => genOk())] }));
 
-test("Argus L1 on f63676e: an unknown-cost result (500) after the row was swept is kept as a late_result event; the user gets the normal error, the row still counts its estimate", withApp(async (t) => {
+for (const [ticks, bill, counted] of [[900_000_000, 90000, 90000], [200_000_000, 20000, 40000]] as const) {
+  test(`A1 pin 18, line 369: a late bill of $${(bill / 1e6).toFixed(2)} on the $0.04 estimate counts $${(counted / 1e6).toFixed(2)}; the row stays unresolved and the Unresolved list shows the late bill`, withApp(async (t) => {
+    sweepDb = t.app.db;
+    const out = await run(t);
+    assert.equal(out.kind, "ok");
+    assert.deepEqual(out.kind === "ok" && out.cost, { micros: null, source: "unresolved", heldMicros: counted });
+    const [row] = ledgerRows(t.app);
+    assert.equal(row.status, "unresolved"); assert.equal(row.actual_micro_usd, null);
+    assert.equal(lateEvents(t)[0].actual_micro_usd, bill);
+    assert.equal(monthTotals(t.app.db).countedMicros, counted);
+    const [u] = unresolvedRows(t.app.db);
+    assert.equal(unresolvedHeldText(u), `$${(counted / 1e6).toFixed(2)} held (late bill $${(bill / 1e6).toFixed(2)})`);
+  }, { gen: [sweepThen(() => genOk(ticks))] }));
+}
+
+test("Argus L2 on 9b837ac: no connection after the row was swept - the $0 'not sent' result is a late_result event, no throw; the retry goes out and the swept row keeps counting its estimate", withApp(async (t, x) => {
+  sweepDb = t.app.db;
+  const out = await run(t);
+  assert.equal(out.kind === "error" && out.code, "unavailable");
+  const evs = lateEvents(t);
+  assert.equal(evs.length, 1);
+  assert.equal(evs[0].outcome, "no_connection"); assert.equal(evs[0].actual_micro_usd, 0); assert.equal(evs[0].cost_source, "not_sent");
+  assert.equal(x.posts().length, 2, "F2: one retry after no connection");
+  const rows = ledgerRows(t.app);
+  assert.deepEqual(rows.map((r) => r.status), ["unresolved", "settled"]);
+  assert.equal(monthTotals(t.app.db).countedMicros, 40000, "swept row at max($0.04, $0); the retry released at $0");
+}, { gen: [sweepThen(netError("ECONNREFUSED")), netError("ECONNREFUSED")] }));
+
+const keyBody = (prefix: string) => `${prefix} key=${DUMMY_KEY} Authorization: Bearer ${DUMMY_KEY} end`;
+const noKeyAnywhere = (t: ReturnType<typeof makeApp>) => {
+  const all = JSON.stringify(t.app.db.prepare("SELECT * FROM events").all()) + JSON.stringify(t.app.db.prepare("SELECT * FROM spend_ledger").all());
+  for (const n of secretNeedles(DUMMY_KEY)) assert.equal(all.includes(n), false, n);
+};
+
+test("Argus L2 on 9b837ac: a 429 after the row was swept - the late_result note keeps the body with the key and Bearer token redacted; no key fragment in events or the ledger", withApp(async (t) => {
+  sweepDb = t.app.db;
+  await run(t);
+  const [ev] = lateEvents(t);
+  assert.equal(ev.http_status, 429);
+  assert.match(String(ev.note), /^quota exceeded key=\[REDACTED\] Authorization: Bearer \[REDACTED\] end$/);
+  noKeyAnywhere(t);
+}, { gen: [sweepThen(text(429, keyBody("quota exceeded")))] }));
+
+test("Argus L2 on 9b837ac: a billed 200 after the row was swept whose body echoes the key - the late_result event holds no key fragment (settle path)", withApp(async (t) => {
+  sweepDb = t.app.db;
+  const out = await run(t);
+  assert.equal(out.kind, "ok");
+  const [ev] = lateEvents(t);
+  assert.equal(ev.actual_micro_usd, 40000);
+  noKeyAnywhere(t);
+}, { gen: [sweepThen(async () => { const ok = await genOk(); const j = await ok.json() as Record<string, unknown>; j.echo = keyBody("echo"); return jsonRes(200, j); })] }));
+
+test("Argus L1 on f63676e / A1 pin 18, line 369: an unknown-cost result (500) after the row was swept is kept as a late_result event; the user gets the normal error, the row still counts its estimate", withApp(async (t) => {
   sweepDb = t.app.db;
   const out = await run(t);
   assert.equal(out.kind, "error");

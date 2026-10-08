@@ -150,22 +150,32 @@ export interface LateResult {
 }
 
 /**
- * Argus L1 on f63676e: a call came back after its row had already left `reserved`. The real outcome (status,
- * provider request id, bill) goes into a `late_result` event so reconciling still has it; the ledger row is not
- * touched, so the cap keeps counting it exactly as it stands (an unresolved row at its full estimate, a settled row
- * at its settled amount). Returns what the row counts now.
+ * Argus L1 on f63676e / A1 pin 18, line 369: a call came back after its row had already left `reserved`. The real
+ * outcome (status, provider request id, bill) goes into a `late_result` event so reconciling still has it. The row
+ * stays as it is (an unresolved row stays unresolved; nothing settles automatically), but a known late bill on an
+ * unresolved row is kept as `late_micro_usd` in its cost_detail, and until A2 reconcile the cap counts that row at the larger of its
+ * estimate and the late bill (FD:5: never less than was spent). A settled row keeps its settled amount.
+ * Returns what the row counts now.
  */
 export function recordLateResult(db: DB, id: string, r: LateResult): { status: string | null; countedMicros: number; actualMicros: number | null; costSource: string | null } {
-  const row = db.prepare("SELECT status, outcome, estimate_micro_usd AS est, actual_micro_usd AS act, cost_source FROM spend_ledger WHERE id = ?").get(id) as
-    { status: string; outcome: string | null; est: number; act: number | null; cost_source: string | null } | undefined;
-  db.prepare("INSERT INTO events (created_at, kind, detail) VALUES (?, 'late_result', ?)").run(isoNY(), JSON.stringify({
-    ledger_id: id, row_status: row?.status ?? null, row_outcome: row?.outcome ?? null,
-    http_status: r.httpStatus, outcome: r.outcome, provider_request_id: r.providerRequestId, provider_trace: r.providerTrace,
-    actual_micro_usd: r.actualMicros, cost_source: r.costSource, reason: r.reason, note: r.note,
-  }));
-  if (!row) return { status: null, countedMicros: 0, actualMicros: null, costSource: null };
-  const settled = row.status === "settled";
-  return { status: row.status, countedMicros: settled ? Number(row.act) : Number(row.est), actualMicros: settled ? Number(row.act) : null, costSource: settled ? row.cost_source : null };
+  return tx(db, () => {
+    const row = db.prepare("SELECT status, outcome FROM spend_ledger WHERE id = ?").get(id) as { status: string; outcome: string | null } | undefined;
+    db.prepare("INSERT INTO events (created_at, kind, detail) VALUES (?, 'late_result', ?)").run(isoNY(), JSON.stringify({
+      ledger_id: id, row_status: row?.status ?? null, row_outcome: row?.outcome ?? null,
+      http_status: r.httpStatus, outcome: r.outcome, provider_request_id: r.providerRequestId, provider_trace: r.providerTrace,
+      actual_micro_usd: r.actualMicros, cost_source: r.costSource, reason: r.reason, note: r.note,
+    }));
+    if (row?.status === "unresolved" && r.actualMicros !== null && Number.isSafeInteger(r.actualMicros) && r.actualMicros >= 0) {
+      // Kept in cost_detail (item 18, line 61: "detail" may change); spend_counted reads it. Never lowered.
+      db.prepare(`UPDATE spend_ledger SET cost_detail = json_set(CASE WHEN json_valid(cost_detail) THEN cost_detail ELSE json_object('previous_detail', cost_detail) END,
+        '$.late_micro_usd', MAX(COALESCE(CASE WHEN json_valid(cost_detail) THEN json_extract(cost_detail, '$.late_micro_usd') END, 0), ?)) WHERE id = ? AND status = 'unresolved'`).run(r.actualMicros, id);
+    }
+    const now = db.prepare("SELECT status, counted_micro_usd AS c, actual_micro_usd AS act, cost_source FROM spend_counted WHERE id = ?").get(id) as
+      { status: string; c: number; act: number | null; cost_source: string | null } | undefined;
+    if (!now) return { status: null, countedMicros: 0, actualMicros: null, costSource: null };
+    const settled = now.status === "settled";
+    return { status: now.status, countedMicros: Number(now.c), actualMicros: settled ? Number(now.act) : null, costSource: settled ? now.cost_source : null };
+  });
 }
 
 /**
@@ -187,6 +197,17 @@ export function highestBillMicros(db: DB, k: { provider: string; model: string; 
   return Number(r.m);
 }
 
-export function unresolvedRows(db: DB): Array<{ id: string; created_at: string; provider: string; model: string; estimate_micro_usd: number; http_status: number | null; outcome: string | null }> {
-  return db.prepare("SELECT id, created_at, provider, model, estimate_micro_usd, http_status, outcome FROM spend_ledger WHERE status = 'unresolved' ORDER BY created_at").all() as never;
+export interface UnresolvedRow {
+  id: string; created_at: string; provider: string; model: string; estimate_micro_usd: number; late_micro_usd: number | null;
+  counted_micro_usd: number; http_status: number | null; outcome: string | null;
+}
+
+/** Settings -> Spend -> Unresolved (F21). counted_micro_usd is what the cap holds (A1 pin 18: max(estimate, late bill)). */
+export function unresolvedRows(db: DB): UnresolvedRow[] {
+  return db.prepare("SELECT id, created_at, provider, model, estimate_micro_usd, late_micro_usd, counted_micro_usd, http_status, outcome FROM spend_counted WHERE status = 'unresolved' ORDER BY created_at").all() as never;
+}
+
+/** The held-amount cell of an Unresolved row; a late bill (A1 pin 18, line 369) is shown next to it. */
+export function unresolvedHeldText(r: Pick<UnresolvedRow, "counted_micro_usd" | "late_micro_usd">): string {
+  return r.late_micro_usd === null ? `${fmtUsd(r.counted_micro_usd)} held` : `${fmtUsd(r.counted_micro_usd)} held (late bill ${fmtUsd(r.late_micro_usd)})`;
 }

@@ -6,13 +6,14 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { openDb, LEDGER_SEEDS, validateSeed, type SeedFile } from "../src/server/db.ts";
-import { reserve, settle, markUnresolved, monthTotals, CapRefused, setCapUsd, priceDrifts, markInterrupted, unresolvedRows } from "../src/server/ledger.ts";
+import { reserve, settle, markUnresolved, monthTotals, CapRefused, setCapUsd, priceDrifts, markInterrupted, unresolvedRows, recordLateResult, unresolvedHeldText } from "../src/server/ledger.ts";
 import { estimate, loadPrices } from "../src/server/prices.ts";
 import { REPO_ROOT } from "../src/server/config.ts";
 
 const SPIKE = join(REPO_ROOT, "spike-results", "ledger.json");
 const base = { provider: "xai" as const, model: "grok-imagine-image-2.0", kind: "generate" as const, resolution: "1k", quality: "low", generationId: "00000000-0000-4000-8000-000000000000", attempt: 1, estimateSource: "test" };
 const OCT = new Date("2026-10-15T12:00:00-04:00");
+const fmt = (m: number) => `$${(m / 1e6).toFixed(2)}`;
 
 test("item 18: the 10 spike rows alone count $0.5547 for October ($0.4947 settled + $0.06 held for the 422)", () => {
   const db = openDb(":memory:", { spikeLedgerPath: SPIKE, seeds: [] });
@@ -230,4 +231,78 @@ test("item 2d: the reservation is the larger of prices.json and the highest bill
   settle(db, r.id, { actualMicros: 90000, costSource: "billed_provider", httpStatus: 200, outcome: "ok" });
   assert.equal(estimate(db, prices, key).micros, 90000);
   assert.throws(() => estimate(db, prices, { ...key, resolution: "2k" }), /No price row/);
+});
+
+// ---- A1 pin 18, line 369 (Amendment 1 at 5c773d7; pointers at item 18, line 61 and section 3.4 Views, line 263) ----
+const late = (micros: number | null) => ({ httpStatus: 200, outcome: "ok", providerRequestId: "req-late", providerTrace: null, actualMicros: micros, costSource: micros === null ? null : "billed_provider", reason: "billed", note: null });
+function sweptRow(db: ReturnType<typeof openDb>) {
+  const r = reserve(db, { ...base, estimateMicros: 40000, now: OCT });
+  assert.equal(markInterrupted(db), 1);
+  return r.id;
+}
+const views = (db: ReturnType<typeof openDb>) => ({
+  month: Number((db.prepare("SELECT counted_micro_usd AS c FROM spend_by_month WHERE month_ny = '2026-10'").get() as { c: number }).c),
+  xai: Number((db.prepare("SELECT counted_micro_usd AS c FROM spend_by_month_provider WHERE month_ny = '2026-10' AND provider = 'xai'").get() as { c: number }).c),
+});
+
+for (const [bill, counted] of [[90000, 90000], [20000, 40000]] as const) {
+  test(`A1 pin 18, line 369: a late bill of ${fmt(bill)} on a $0.04 estimate counts ${fmt(counted)} everywhere (cap check, month and provider views, held, Unresolved list); the row stays unresolved`, () => {
+    const db = openDb(":memory:", { spikeLedgerPath: null });
+    const id = sweptRow(db);
+    const out = recordLateResult(db, id, late(bill));
+    assert.deepEqual(out, { status: "unresolved", countedMicros: counted, actualMicros: null, costSource: null });
+    const row = db.prepare("SELECT status, actual_micro_usd, settled_at FROM spend_ledger WHERE id = ?").get(id) as Record<string, unknown>;
+    assert.deepEqual({ ...row }, { status: "unresolved", actual_micro_usd: null, settled_at: null }, "nothing settles automatically");
+    const t = monthTotals(db, "2026-10");
+    assert.equal(t.countedMicros, counted); assert.equal(t.heldMicros, counted); assert.equal(t.byProvider.xai, counted); assert.equal(t.unresolvedCount, 1);
+    assert.deepEqual(views(db), { month: counted, xai: counted });
+    const [u] = unresolvedRows(db);
+    assert.equal(u.counted_micro_usd, counted); assert.equal(u.late_micro_usd, bill); assert.equal(u.estimate_micro_usd, 40000);
+    assert.equal(unresolvedHeldText(u), `${fmt(counted)} held (late bill ${fmt(bill)})`);
+    // The cap check reads the same amount: with a cap of counted + $0.04 the next $0.04 call fits; one micro-dollar less refuses it.
+    setCapUsd(db, (counted + 40000) / 1e6);
+    reserve(db, { ...base, estimateMicros: 40000, now: OCT });
+    assert.throws(() => reserve(db, { ...base, estimateMicros: 1, now: OCT }), CapRefused);
+  });
+}
+
+test("A1 pin 18, line 369: a late result with no known bill keeps the estimate; a second, smaller late bill never lowers the first; the database refuses to lower or drop it", () => {
+  const db = openDb(":memory:", { spikeLedgerPath: null });
+  const id = sweptRow(db);
+  assert.equal(recordLateResult(db, id, late(null)).countedMicros, 40000);
+  assert.equal(unresolvedRows(db)[0].late_micro_usd, null);
+  assert.equal(unresolvedHeldText(unresolvedRows(db)[0]), "$0.04 held");
+  assert.equal(recordLateResult(db, id, late(90000)).countedMicros, 90000);
+  assert.equal(recordLateResult(db, id, late(20000)).countedMicros, 90000);
+  assert.match(String((db.prepare("SELECT cost_detail FROM spend_ledger WHERE id = ?").get(id) as { cost_detail: string }).cost_detail), /"reason":"unresolved: the app stopped/);
+  assert.throws(() => db.prepare("UPDATE spend_ledger SET cost_detail = json_set(cost_detail, '$.late_micro_usd', 1) WHERE id = ?").run(id), /never lowered or removed/);
+  assert.throws(() => db.prepare("UPDATE spend_ledger SET cost_detail = '{}' WHERE id = ?").run(id), /never lowered or removed/);
+  assert.equal(Number((db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind = 'late_result'").get() as { n: number }).n), 3);
+  // A2 reconcile (settle with manual_reconcile) is still allowed and then the settled amount counts.
+  db.prepare("UPDATE spend_ledger SET status = 'settled', actual_micro_usd = 85000, cost_source = 'manual_reconcile', cost_detail = '{}', settled_at = 'x' WHERE id = ?").run(id);
+  assert.equal(monthTotals(db, "2026-10").countedMicros, 85000);
+});
+
+test("A1 pin 18, line 369: a late result on a row that was already settled changes nothing but the event", () => {
+  const db = openDb(":memory:", { spikeLedgerPath: null });
+  const r = reserve(db, { ...base, estimateMicros: 40000, now: OCT });
+  settle(db, r.id, { actualMicros: 40000, costSource: "billed_provider", httpStatus: 200, outcome: "ok" });
+  assert.deepEqual(recordLateResult(db, r.id, late(90000)), { status: "settled", countedMicros: 40000, actualMicros: 40000, costSource: "billed_provider" });
+  assert.equal(monthTotals(db, "2026-10").countedMicros, 40000);
+});
+
+test("A1 pin 18, line 369: a database whose spend_counted view predates pin 18 gets the new view at the next start", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rsr-view-"));
+  try {
+    const path = join(dir, "rsr.sqlite");
+    let db = openDb(path, { spikeLedgerPath: null });
+    const id = sweptRow(db);
+    recordLateResult(db, id, late(90000));
+    db.exec("DROP VIEW spend_by_month_provider; DROP VIEW spend_by_month; DROP VIEW spend_counted; CREATE VIEW spend_counted AS SELECT *, CASE WHEN status = 'settled' THEN actual_micro_usd ELSE estimate_micro_usd END AS counted_micro_usd FROM spend_ledger; CREATE VIEW spend_by_month AS SELECT month_ny, SUM(counted_micro_usd) AS counted_micro_usd FROM spend_counted GROUP BY month_ny; CREATE VIEW spend_by_month_provider AS SELECT month_ny, provider, SUM(counted_micro_usd) AS counted_micro_usd FROM spend_counted GROUP BY month_ny, provider;");
+    assert.equal(monthTotals(db, "2026-10").countedMicros, 40000, "the old view undercounts");
+    db.close();
+    db = openDb(path, { spikeLedgerPath: null });
+    assert.equal(monthTotals(db, "2026-10").countedMicros, 90000);
+    db.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

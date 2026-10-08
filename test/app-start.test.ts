@@ -30,3 +30,40 @@ test("Argus L2: app start turns a leftover 'reserved' row into 'unresolved' (int
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("A1 pin 10, line 361 (and A1 pin 18 (b), line 369): the free key check runs when the server starts, before any request", async () => {
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const { pathToFileURL } = await import("node:url");
+  const { REPO_ROOT } = await import("../src/server/config.ts");
+  const { DUMMY_KEY } = await import("./helpers.ts");
+  const seen: Array<{ path: string; auth: string | undefined }> = [];
+  let sawCheck: () => void = () => undefined;
+  const checked = new Promise<void>((r) => { sawCheck = r; });
+  const fake = createServer((req, res) => {
+    seen.push({ path: req.url ?? "", auth: req.headers.authorization });
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/v1/api-key") { res.end(JSON.stringify({ api_key_blocked: false, api_key_disabled: false, team_blocked: false })); sawCheck(); return; }
+    if (req.url === "/v1/image-generation-models") { res.end(JSON.stringify({ models: [{ id: "grok-imagine-image-2.0" }] })); return; }
+    res.statusCode = 404; res.end("{}");
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
+  const dir = mkdtempSync(join(tmpdir(), "rsr-start-kc-"));
+  const app = pathToFileURL(join(REPO_ROOT, "src", "server", "app.ts")).href;
+  // Env built from scratch: a dummy key only, and the xAI address is the local fake (no network, nothing paid).
+  const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "/tmp", RSR_DATA_DIR: dir, XAI_API_KEY: DUMMY_KEY, RSR_XAI_BASE_URL: `http://127.0.0.1:${(fake.address() as { port: number }).port}` };
+  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", `import { startApp } from ${JSON.stringify(app)}; startApp(); setTimeout(() => {}, 20000);`], { env, stdio: "ignore" });
+  try {
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([checked.then(() => false), new Promise<boolean>((r) => { timer = setTimeout(() => r(true), 15000); })]);
+    clearTimeout(timer);
+    assert.equal(timedOut, false, "no key check reached the fake xAI after start");
+    assert.deepEqual(seen[0], { path: "/v1/api-key", auth: `Bearer ${DUMMY_KEY}` });
+    assert.equal(seen.some((s) => s.path === "/v1/images/generations"), false, "nothing paid at start");
+  } finally {
+    const gone = new Promise((r) => child.on("exit", r));
+    child.kill("SIGTERM"); await gone;
+    fake.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

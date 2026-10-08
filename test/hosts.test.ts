@@ -1,4 +1,4 @@
-// A1 pin 17, line 368 (Amendment 1 at 199ad31): Host allowlist, checked before anything else on every request.
+// A1 pin 17, line 368 (Amendment 1 at 5c773d7): Host allowlist, checked before anything else on every request.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

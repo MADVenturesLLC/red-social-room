@@ -25,6 +25,11 @@ let mock: Server, server: ChildProcess, base = "", dataDir = "", port = 0, start
 let releaseSlow: () => void = () => undefined, slowSeen: () => void = () => undefined;
 const slowArrived = new Promise<void>((r) => { slowSeen = r; });
 const slowGate = new Promise<void>((r) => { releaseSlow = r; });
+// A prompt containing "late-call" is held the same way and then billed $0.09 (A1 pin 18 late-bill test).
+let releaseLate: () => void = () => undefined, lateSeen: () => void = () => undefined;
+const lateArrived = new Promise<void>((r) => { lateSeen = r; });
+const lateGate = new Promise<void>((r) => { releaseLate = r; });
+let keyCheckBeforeFirstRequest = false;
 // A1 pin 17, line 368: set only when the server STARTS (not at build), to prove it is read at runtime.
 const ALLOWED_HOSTS_ENV = "  Phone.Tailnet-Example.ts.net , other.example ";
 
@@ -91,6 +96,7 @@ before(async () => {
       if (req.url === "/v1/api-key") return res.end(JSON.stringify({ api_key_blocked: false, api_key_disabled: false, team_blocked: false }));
       if (req.url === "/v1/image-generation-models") return res.end(JSON.stringify({ models: [{ id: "grok-imagine-image-2.0", version: "1.0", fingerprint: "fp_e2e" }] }));
       if (req.url === "/v1/images/generations" && req.method === "POST") {
+        if (body.includes("late-call")) { lateSeen(); void lateGate.then(() => { res.setHeader("x-request-id", "req-e2e-late"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 900000000 } })); }); return; }
         if (body.includes("slow-call")) { slowSeen(); void slowGate.then(() => { res.setHeader("x-request-id", "req-e2e-slow"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 400000000 } })); }); return; }
         res.setHeader("x-request-id", "req-e2e");
         return res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: body.includes("medium-bill") ? 600000000 : 400000000 } }));
@@ -113,6 +119,10 @@ before(async () => {
   server = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(port), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env: startEnv, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.on("data", (c) => { serverLog += c; });
   server.stderr?.on("data", (c) => { serverLog += c; });
+  // A1 pin 10, line 361: the free key check runs when the server starts. Wait for it at the fake xAI before this
+  // test sends the server any HTTP request.
+  for (let i = 0; i < 150 && !mockSeen.some((m) => m.path === "/v1/api-key"); i++) await new Promise((r) => setTimeout(r, 200));
+  keyCheckBeforeFirstRequest = mockSeen.some((m) => m.path === "/v1/api-key" && m.auth === `Bearer ${DUMMY_KEY}`);
   for (let i = 0; i < 100; i++) {
     try { const r = await fetch(`${base}/api/status`); if (r.ok) return; } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 200));
@@ -252,7 +262,7 @@ test("Argus L1 on f63676e: a second server on the same data directory refuses to
     const db = new DatabaseSync(dbPath);
     try { return db.prepare("SELECT id, status, outcome, provider_request_id FROM spend_ledger WHERE provider_request_id IS ? OR status = 'reserved'").all(id ?? null) as Array<Record<string, unknown>>; } finally { db.close(); }
   };
-  const lock = readFileSync(join(dataDir, "rsr.lock"), "utf8").trim();
+  const lock = readFileSync(join(dataDir, "rsr.lock.pid"), "utf8").trim();
   assert.equal(lock, String(server.pid), "the first server holds the data-directory lock");
   const inFlight = post("/api/generate", { prompt: "slow-call: a lighthouse at dusk", ratio: "1:1" });
   await slowArrived;
@@ -274,7 +284,7 @@ test("Argus L1 on f63676e: a second server on the same data directory refuses to
   assert.match(out, /refusing to start: Another Red Social Room server \(pid \d+\) is already using the data directory /);
   const stillReserved = rowsOf().filter((r) => r.status === "reserved");
   assert.deepEqual(stillReserved.map((r) => r.id), reservedBefore.map((r) => r.id), "no sweep: the live row is still reserved");
-  assert.equal(readFileSync(join(dataDir, "rsr.lock"), "utf8").trim(), String(server.pid), "the lock still belongs to the first server");
+  assert.equal(readFileSync(join(dataDir, "rsr.lock.pid"), "utf8").trim(), String(server.pid), "the lock still belongs to the first server");
 
   releaseSlow();
   const g = JSON.parse(await (await inFlight).text());
@@ -285,6 +295,33 @@ test("Argus L1 on f63676e: a second server on the same data directory refuses to
 });
 let emptyHostStatus = "", missingHostStatus = "";
 after(() => { console.log(`# host probe: empty Host -> ${emptyHostStatus}, missing Host -> ${missingHostStatus}`); });
+
+test("A1 pin 10, line 361: the server ran the free key check at start, before it got any request", () => {
+  assert.equal(keyCheckBeforeFirstRequest, true);
+});
+
+test("A1 pin 18, line 369: a $0.09 bill that arrives after its $0.04 row was swept to unresolved counts $0.09; the row stays unresolved and Settings -> Unresolved shows the late bill next to the held amount", async () => {
+  const dbPath = join(dataDir, "db", "rsr.sqlite");
+  const before = (await (await fetch(`${base}/api/status`)).json()) as { totals: { countedMicros: number; unresolvedCount: number } };
+  const inFlight = post("/api/generate", { prompt: "late-call: a red kite over a hill", ratio: "1:1" });
+  await lateArrived;
+  // Stand-in for a sweep by a process that stopped and restarted (the lock rules out a second live server).
+  const db = new DatabaseSync(dbPath);
+  try { assert.equal(Number(db.prepare("UPDATE spend_ledger SET status = 'unresolved', outcome = 'interrupted' WHERE status = 'reserved'").run().changes), 1); } finally { db.close(); }
+  releaseLate();
+  const g = JSON.parse(await (await inFlight).text());
+  assert.equal(g.status, "ok", JSON.stringify(g));
+  const after = (await (await fetch(`${base}/api/status`)).json()) as { totals: { countedMicros: number; unresolvedCount: number } };
+  assert.equal(after.totals.countedMicros - before.totals.countedMicros, 90000);
+  assert.equal(after.totals.unresolvedCount, before.totals.unresolvedCount + 1);
+  const check = new DatabaseSync(dbPath);
+  try {
+    const row = check.prepare("SELECT status, actual_micro_usd FROM spend_ledger WHERE outcome = 'interrupted' AND id NOT IN (SELECT id FROM spend_ledger WHERE provider_request_id IS NOT NULL)").all() as Array<Record<string, unknown>>;
+    assert.deepEqual(row.map((r) => ({ ...r })), [{ status: "unresolved", actual_micro_usd: null }]);
+  } finally { check.close(); }
+  const settings = await (await fetch(`${base}/settings`)).text();
+  assert.match(settings, /\$0\.09 held \(late bill \$0\.09\)/);
+});
 
 test("POSTs without the same-origin header, or marked cross-site, are refused before anything runs", async () => {
   const n = mockSeen.length;

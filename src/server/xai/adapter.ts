@@ -125,8 +125,10 @@ async function checkKeyInner(d: XaiDeps, opts: { force?: boolean }): Promise<Key
 
 /** Words that mark an xAI 429 as a quota/billing problem rather than a rate limit (xAI documents no shape).
  *  A1 pin 15, line 366: quota, billing, credit or credits, spending limit, insufficient funds, balance, payment -
- *  each matched on its own and without regard to case. */
-export const QUOTA_429_RE = /quota|billing|credits?\b|spending[ _-]?limit|insufficient[ _-]?funds|balance|payment/i;
+ *  each matched on its own and without regard to case. A1 pin 18 (c), line 369 (Amendment 1 at 5c773d7): anywhere in
+ *  the body, even inside longer words; "credit(s)" must not be followed by a letter (so credit_limit, credit2 and
+ *  "credit limit" match, creditor does not); a space, underscore, hyphen or nothing between the two-word phrases. */
+export const QUOTA_429_RE = /quota|billing|credits?(?![a-z])|spending[ _-]?limit|insufficient[ _-]?funds|balance|payment/i;
 
 export function invalidateKeyCheck(d: XaiDeps): void { d.keyCheck.ok = false; }
 

@@ -1,6 +1,6 @@
 import { getApp } from "../../server/app.ts";
 import { appStatus } from "../../server/status.ts";
-import { unresolvedRows, fmtUsd } from "../../server/ledger.ts";
+import { unresolvedRows, unresolvedHeldText, fmtUsd } from "../../server/ledger.ts";
 import { freeBytes } from "../../server/store.ts";
 import { KeyForm, CheckButton, CapForm } from "../../components/SettingsClient.tsx";
 
@@ -41,7 +41,7 @@ export default function SettingsPage() {
         <h3>Unresolved ({unresolved.length})</h3>
         <p className="muted">Calls that may have been charged. Each stays held against the cap until it is checked against the provider console (marking them comes in A2).</p>
         <table><tbody>
-          {unresolved.map((r) => <tr key={r.id}><td>{r.created_at}</td><td>{r.provider}</td><td>Ref {r.id.slice(0, 8)}</td><td>{fmtUsd(r.estimate_micro_usd)} held</td><td>HTTP {r.http_status ?? "—"}</td></tr>)}
+          {unresolved.map((r) => <tr key={r.id}><td>{r.created_at}</td><td>{r.provider}</td><td>Ref {r.id.slice(0, 8)}</td><td>{unresolvedHeldText(r)}</td><td>HTTP {r.http_status ?? "—"}</td></tr>)}
         </tbody></table>
       </section>
       <section className="card">

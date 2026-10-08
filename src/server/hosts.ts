@@ -1,4 +1,4 @@
-// A1 pin 17, line 368 (Amendment 1 at 0e1d324): every request - pages, API routes, static files - checks the Host
+// A1 pin 17, line 368 (Amendment 1 at 5c773d7): every request - pages, API routes, static files - checks the Host
 // header before anything else (DNS-rebinding guard; Argus M2 on fa3d359). The host name is compared without its
 // port and without regard to case. Allowed by default: localhost, 127.0.0.1, [::1]; RSR_ALLOWED_HOSTS adds more
 // names, comma-separated, spaces trimmed. An empty or unlisted Host (or a missing one that reaches the app, as
