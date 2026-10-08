@@ -330,7 +330,9 @@ test("Argus note on 0e2f1f4 (A1 pin 18 (a) / 19 (a)): the database refuses a lat
   for (const bad of ["'\"90000\"'", "'90000.5'", "'-1'", "'null'", "'\"abc\"'"]) {
     assert.throws(() => db.prepare(`UPDATE spend_ledger SET cost_detail = json_set(cost_detail, '$.late_micro_usd', json(${bad})) WHERE id = ?`).run(id), /whole, non-negative number of micro-dollars/, bad);
   }
-  assert.throws(() => db.prepare("INSERT INTO spend_ledger (id, created_at, month_ny, provider, model, kind, generation_id, attempt, estimate_micro_usd, estimate_source, status, cost_detail) SELECT 'x2', created_at, month_ny, provider, model, kind, generation_id, 9, estimate_micro_usd, estimate_source, 'unresolved', '{\"late_micro_usd\":\"5\"}' FROM spend_ledger WHERE id = ?").run(id), /whole, non-negative number/);
+  for (const bad of ['"5"', "-5", "5.5"]) {
+    assert.throws(() => db.prepare(`INSERT INTO spend_ledger (id, created_at, month_ny, provider, model, kind, generation_id, attempt, estimate_micro_usd, estimate_source, status, cost_detail) SELECT 'x2', created_at, month_ny, provider, model, kind, generation_id, 9, estimate_micro_usd, estimate_source, 'unresolved', '{"late_micro_usd":${bad}}' FROM spend_ledger WHERE id = ?`).run(id), /whole, non-negative number/, `insert ${bad}`);
+  }
   assert.equal(monthTotals(db, "2026-10").countedMicros, 40000, "the row still counts its estimate");
   db.prepare("UPDATE spend_ledger SET cost_detail = json_set(cost_detail, '$.late_micro_usd', 90000) WHERE id = ?").run(id);
   assert.equal(monthTotals(db, "2026-10").countedMicros, 90000);

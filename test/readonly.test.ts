@@ -14,11 +14,13 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { acquireDataDirLock, releaseDataDirLock, DataDirLocked, DataDirLockFailed, DataDirNotWritable, isNotWritable, LOCK_FILE, LOCK_PID_FILE } from "../src/server/lock.ts";
-import { checkWritable, NOT_WRITABLE_MESSAGE } from "../src/server/writable.ts";
+import { checkWritable, checkImageShards, NOT_WRITABLE_MESSAGE, NOT_WRITABLE_SAVE_MESSAGE } from "../src/server/writable.ts";
+import { createHash } from "node:crypto";
+import { monthTotals } from "../src/server/ledger.ts";
 import { getApp, startApp } from "../src/server/app.ts";
 import { runGenerate } from "../src/server/generate.ts";
 import { REPO_ROOT } from "../src/server/config.ts";
-import { makeApp, fakeXai, ledgerRows } from "./helpers.ts";
+import { makeApp, fakeXai, ledgerRows, sampleJpeg, DUMMY_KEY } from "./helpers.ts";
 
 assert.notEqual(process.getuid?.(), 0, "read-only tests must not run as root: root ignores chmod 0555/0444, so nothing would really be blocked");
 
@@ -180,6 +182,10 @@ test("A1 pin 19 (d): checkWritable passes on a writable directory and names what
       finally { chmodSync(path, before); }
       checkWritable(t.dir);
     }
+    // The probe files are removed again (Argus W8 on 5ea231d): none left anywhere in the data directory.
+    mkdirSync(join(t.dir, "images", "ab"), { recursive: true });
+    checkWritable(t.dir);
+    assert.deepEqual((readdirSync(t.dir, { recursive: true }) as string[]).filter((n) => n.includes(".rsr-write-check")), []);
   } finally { t.cleanup(); }
 });
 
@@ -192,7 +198,9 @@ test("A1 pin 19 (d): data directory and database made read-only after the app op
     t.app.db.prepare("INSERT INTO settings (key, value) VALUES ('ro_probe', '1')").run();
     t.app.db.prepare("DELETE FROM settings WHERE key = 'ro_probe'").run();
     const runsBefore = Number((t.app.db.prepare("SELECT COUNT(*) AS n FROM runs").get() as { n: number }).n);
+    const checksBefore = Number((t.app.db.prepare("SELECT COUNT(*) AS n FROM prompt_checks").get() as { n: number }).n);
     await assert.rejects(runGenerate(t.app, { prompt: "a lighthouse at dusk", ratio: "1:1" }), notWritable);
+    assert.equal(Number((t.app.db.prepare("SELECT COUNT(*) AS n FROM prompt_checks").get() as { n: number }).n), checksBefore, "refused before the prompt check writes its row");
     assert.equal(x.requests.length, 0, "the fake provider recorded zero calls");
     assert.equal(ledgerRows(t.app).length, 0);
     assert.equal(Number((t.app.db.prepare("SELECT COUNT(*) AS n FROM runs").get() as { n: number }).n), runsBefore);
@@ -252,4 +260,136 @@ test("A1 pin 19 (d): the paid POST route - write access lost between the check a
     } finally { restore(); }
     assert.equal(x.requests.filter((r) => r.path === "/v1/images/generations").length, 0, "the fake provider recorded zero image calls");
   } finally { delete g.__rsrApp; ro.close(); t.cleanup(); }
+});
+
+// --- Gap 1 (Surface ruling "Close it in A1", Oct 8 ~3:37 AM ET): the images/<xx>/ shard -------------------------------
+
+test("A1 pin 19 (d) gap 1: the exact images/<xx>/ shard this image would be saved to is read-only (images/ itself writable) - the paid call refuses before the provider: zero calls, no ledger row, no run; writable again, it goes through", async () => {
+  const x = fakeXai();
+  const t = makeApp({ fetch: x.fetch });
+  // The fake returns the same bytes every time, so the shard is known here; the app cannot know it before the call.
+  const shard = join(t.app.imagesDir, createHash("sha256").update(await sampleJpeg()).digest("hex").slice(0, 2));
+  mkdirSync(shard, { recursive: true });
+  chmodSync(shard, 0o555); // only the shard: the data directory, db/ and images/ stay writable
+  try {
+    const runs = () => Number((t.app.db.prepare("SELECT COUNT(*) AS n FROM runs").get() as { n: number }).n);
+    const before = runs();
+    await assert.rejects(runGenerate(t.app, { prompt: "a lighthouse at dusk", ratio: "1:1" }), (e: unknown) => notWritable(e) && (e as Error).message.includes(shard));
+    assert.equal(x.requests.length, 0, "the fake provider recorded zero calls");
+    assert.equal(ledgerRows(t.app).length, 0);
+    assert.equal(runs(), before);
+    chmodSync(shard, 0o755);
+    const ok = await runGenerate(t.app, { prompt: "a lighthouse at dusk", ratio: "1:1" });
+    assert.equal(ok.status, "ok", JSON.stringify(ok));
+    assert.ok(readdirSync(shard).some((n) => n.endsWith(".jpg")), "saved into that shard");
+  } finally { try { chmodSync(shard, 0o755); } catch { /* gone */ } t.cleanup(); }
+});
+
+test("A1 pin 19 (d) gap 1: checkImageShards probes every existing two-hex shard (any one could be the target) and nothing else; a missing shard is not created", () => {
+  const t = makeApp({ fetch: fakeXai().fetch });
+  const images = t.app.imagesDir;
+  try {
+    mkdirSync(images, { recursive: true });
+    for (const n of ["00", "7f", "ff"]) mkdirSync(join(images, n));
+    mkdirSync(join(images, "notashard")); chmodSync(join(images, "notashard"), 0o555); // ignored
+    checkImageShards(t.dir, images);
+    assert.deepEqual(readdirSync(images).sort(), ["00", "7f", "ff", "notashard"], "no shard created, no probe file left");
+    for (const n of ["00", "7f", "ff"]) {
+      chmodSync(join(images, n), 0o555);
+      try { assert.throws(() => checkImageShards(t.dir, images), (e: unknown) => notWritable(e) && (e as Error).message.includes(join(images, n)), n); }
+      finally { chmodSync(join(images, n), 0o755); }
+    }
+    chmodSync(join(images, "notashard"), 0o755);
+  } finally { t.cleanup(); }
+});
+
+// --- Gap 2 (Surface: optional in A1): key save, cap save and library save give the plain not-writable 500 ----------
+
+async function routeCase(fn: (t: ReturnType<typeof makeApp>, x: ReturnType<typeof fakeXai>, post: (path: string, body: unknown) => Promise<Response>) => Promise<void>) {
+  const g = globalThis as typeof globalThis & { __rsrApp?: unknown };
+  const x = fakeXai();
+  const t = makeApp({ fetch: x.fetch });
+  const routes: Record<string, () => Promise<{ POST: (r: Request) => Promise<Response> }>> = {
+    "/api/settings/key": () => import("../src/app/api/settings/key/route.ts"),
+    "/api/settings/cap": () => import("../src/app/api/settings/cap/route.ts"),
+    "/api/library": () => import("../src/app/api/library/route.ts"),
+  };
+  const post = async (path: string, body: unknown) => (await routes[path]()).POST(new Request(`http://127.0.0.1:3000${path}`, { method: "POST", headers: { host: "127.0.0.1:3000", "x-rsr": "1", "content-type": "application/json" }, body: JSON.stringify(body) }));
+  g.__rsrApp = t.app;
+  try { await fn(t, x, post); } finally { delete g.__rsrApp; t.cleanup(); }
+}
+const saveRefused = async (res: Response) => { assert.equal(res.status, 500); assert.deepEqual(await res.json(), { error: NOT_WRITABLE_SAVE_MESSAGE, code: "data_dir_not_writable" }); };
+
+test("A1 pin 19 (d) gap 2: key save on a read-only data directory - 500 'nothing was saved', the key is unchanged and no key check is sent; secrets/ alone read-only refuses too", async () => {
+  await routeCase(async (t, x, post) => {
+    const before = t.app.keys.status();
+    const restore = makeReadOnly(t.dir);
+    try { await saveRefused(await post("/api/settings/key", { key: DUMMY_KEY.replace("eSnz", "Zz9q") })); } finally { restore(); }
+    assert.deepEqual(t.app.keys.status(), before);
+    assert.equal(x.requests.length, 0, "no key check");
+    const ok = await post("/api/settings/key", { key: DUMMY_KEY.replace("eSnz", "Zz9q") });
+    assert.equal(ok.status, 200);
+    const saved = t.app.keys.status();
+    chmodSync(join(t.dir, "secrets"), 0o500);
+    try { await saveRefused(await post("/api/settings/key", { key: DUMMY_KEY.replace("eSnz", "Yy8r") })); } finally { chmodSync(join(t.dir, "secrets"), 0o700); }
+    assert.deepEqual(t.app.keys.status(), saved);
+  });
+});
+
+test("A1 pin 19 (d) gap 2: cap save on a read-only data directory - 500 'nothing was saved', the cap is unchanged", async () => {
+  await routeCase(async (t, _x, post) => {
+    const cap = monthTotals(t.app.db).capMicros;
+    const restore = makeReadOnly(t.dir);
+    try { await saveRefused(await post("/api/settings/cap", { usd: 12 })); } finally { restore(); }
+    assert.equal(monthTotals(t.app.db).capMicros, cap);
+    assert.equal((await post("/api/settings/cap", { usd: 12 })).status, 200);
+    assert.equal(monthTotals(t.app.db).capMicros, 12_000_000);
+  });
+});
+
+test("A1 pin 19 (d) gap 2: library save on a read-only data directory - 500 'nothing was saved', no post is written", async () => {
+  await routeCase(async (t, _x, post) => {
+    const g = await runGenerate(t.app, { prompt: "a lighthouse at dusk", ratio: "1:1" });
+    assert.equal(g.status, "ok");
+    const posts = () => Number((t.app.db.prepare("SELECT COUNT(*) AS n FROM posts").get() as { n: number }).n);
+    const restore = makeReadOnly(t.dir);
+    try { await saveRefused(await post("/api/library", { generationId: g.generationId, notes: "x" })); } finally { restore(); }
+    assert.equal(posts(), 0);
+    assert.equal((await post("/api/library", { generationId: g.generationId, notes: "x" })).status, 200);
+    assert.equal(posts(), 1);
+  });
+});
+
+// --- Argus L2 on 5ea231d: the data directory does not exist and cannot be created ------------------------------------
+
+test("Argus L2 on 5ea231d / A1 pin 19 (d): the data directory does not exist and its parent is 0555 - startApp() exits 1 with 'The data directory is not writable', not 'another server', no SQLite text", () => {
+  const g = globalThis as typeof globalThis & { __rsrApp?: unknown };
+  const saved = { data: process.env.RSR_DATA_DIR, xai: process.env.XAI_API_KEY, gem: process.env.GEMINI_API_KEY };
+  const parent = tmp();
+  const dir = join(parent, "data");
+  const errs: string[] = []; const origErr = console.error; console.error = (m: unknown) => { errs.push(String(m)); };
+  try {
+    delete process.env.XAI_API_KEY; delete process.env.GEMINI_API_KEY; process.env.RSR_DATA_DIR = dir; delete g.__rsrApp;
+    chmodSync(parent, 0o555);
+    assert.throws(() => acquireDataDirLock(dir), (e: unknown) => notWritable(e) && (e as Error).message.includes(`(cannot create or write ${dir}, EACCES)`));
+    const codes: number[] = [];
+    assert.equal(startApp((c) => codes.push(c)), null);
+    assert.deepEqual(codes, [1]);
+    assert.match(errs.join("\n"), /^\[rsr\] refusing to start: The data directory is not writable: /);
+    assert.doesNotMatch(errs.join("\n"), /Another Red Social Room server/);
+    assert.doesNotMatch(errs.join("\n"), RAW_SQLITE_RE);
+    assert.equal(existsSync(dir), false);
+  } finally {
+    console.error = origErr; delete g.__rsrApp;
+    for (const [k, v] of [["RSR_DATA_DIR", saved.data], ["XAI_API_KEY", saved.xai], ["GEMINI_API_KEY", saved.gem]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    cleanup(parent);
+  }
+});
+
+test("Argus N13 on 5ea231d: any other lock failure names the SQLite result code, never SQLite's own text (rsr.lock is not a database)", () => {
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, LOCK_FILE), "this is not a SQLite database file, just text ".repeat(20));
+    assert.throws(() => acquireDataDirLock(dir), (e: unknown) => e instanceof DataDirLockFailed && /\(SQLite result code 26\)/.test((e as Error).message) && !/not a database/.test((e as Error).message));
+  } finally { cleanup(dir); }
 });

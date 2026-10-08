@@ -4,6 +4,8 @@ import { getApp } from "../../../../server/app.ts";
 import { KeyRejectedInput } from "../../../../server/keys.ts";
 import { checkKey } from "../../../../server/xai/adapter.ts";
 import { guardPost, json, readJson } from "../../../../server/route-util.ts";
+import { notWritableResponse } from "../../../../server/writable.ts";
+import { join } from "node:path";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +14,7 @@ export async function POST(req: Request): Promise<Response> {
   const body = await readJson(req, 4096);
   if (!body) return json({ error: "Expected a JSON object." }, 400);
   const app = getApp();
+  const ro = notWritableResponse(app.dataDir, [join(app.dataDir, "secrets")]); if (ro) return ro; // pin 19 (d) gap 2
   try {
     const key = app.keys.save(body.key);
     const c = await checkKey(app, { force: true });

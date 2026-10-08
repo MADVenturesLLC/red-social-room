@@ -61,8 +61,11 @@ test("A1 pin 10, line 361 (and A1 pin 18 (b), line 369): the free key check runs
     assert.deepEqual(seen[0], { path: "/v1/api-key", auth: `Bearer ${DUMMY_KEY}` });
     assert.equal(seen.some((s) => s.path === "/v1/images/generations"), false, "nothing paid at start");
   } finally {
-    const gone = new Promise((r) => child.on("exit", r));
-    child.kill("SIGTERM"); await gone;
+    // A child that already exited (e.g. startApp refused to start) never emits "exit" again: do not wait for it.
+    if (child.exitCode === null && child.signalCode === null) {
+      const gone = new Promise((r) => child.on("exit", r));
+      child.kill("SIGTERM"); await gone;
+    }
     fake.close();
     rmSync(dir, { recursive: true, force: true });
   }

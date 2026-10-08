@@ -10,6 +10,7 @@ import { connect } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdtempSync, rmSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPO_ROOT } from "../../src/server/config.ts";
@@ -376,6 +377,26 @@ test("A1 pin 19 (d), line 370: data directory and database made read-only after 
   assert.equal(g.status, "ok", JSON.stringify(g));
 });
 
+test("A1 pin 19 (d) gap 1 (Surface ruling, Oct 8 ~3:37 AM ET): only the images/<xx>/ shard the next image would be saved to is read-only - a paid POST returns 500 with the not-writable message, zero provider calls, no ledger/run/generation row; writable again, it goes through", async () => {
+  assert.notEqual(process.getuid?.(), 0, "must not run as root: root ignores chmod, so nothing would be read-only");
+  // The mock returns the same JPEG every time, so the test knows the shard; the server cannot until xAI answers.
+  const shard = join(dataDir, "images", createHash("sha256").update(await sampleJpeg()).digest("hex").slice(0, 2));
+  assert.ok(statSync(shard).isDirectory(), "earlier 1:1 calls saved into this shard");
+  const counts = () => { const db = new DatabaseSync(join(dataDir, "db", "rsr.sqlite")); try { return ["spend_ledger", "runs", "generations"].map((t) => Number((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n)); } finally { db.close(); } };
+  const rowsBefore = counts(), providerCalls = mockSeen.length, mode = statSync(shard).mode & 0o7777;
+  chmodSync(shard, 0o555);
+  try {
+    const res = await post("/api/generate", { prompt: "a lighthouse at dusk, read-only shard", ratio: "1:1" });
+    const text = await record("POST /api/generate (read-only image shard)", res);
+    assert.equal(res.status, 500, text);
+    assert.deepEqual(JSON.parse(text), { error: NOT_WRITABLE_MESSAGE, code: "data_dir_not_writable" });
+    assert.equal(mockSeen.length, providerCalls, "the fake provider recorded zero calls");
+    assert.deepEqual(counts(), rowsBefore, "no ledger row, run or generation was written");
+  } finally { chmodSync(shard, mode); }
+  const g = JSON.parse(await (await post("/api/generate", { prompt: "a lighthouse at dusk, shard writable again", ratio: "1:1" })).text());
+  assert.equal(g.status, "ok", JSON.stringify(g));
+});
+
 /** Start `next start` and wait for it to exit (at most ~30 s); returns the exit code (undefined if it kept running) and its output. */
 async function startAndAwaitExit(env: NodeJS.ProcessEnv, p: number): Promise<{ code: number | null | undefined; out: string }> {
   const child = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(p), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -391,11 +412,13 @@ async function startAndAwaitExit(env: NodeJS.ProcessEnv, p: number): Promise<{ c
   return { code, out };
 }
 
-test("A1 pin 19 (d), line 370 (Argus L1 and L3 on 0e2f1f4): starting the server on a read-only data directory (new and empty, or left by a previous run), or with a read-only rsr.lock in a writable one, exits 1 with 'The data directory is not writable', never 'another server holds the lock' and never SQLite's own text", async () => {
+test("A1 pin 19 (d), line 370 (Argus L1 and L3 on 0e2f1f4): starting the server on a read-only data directory (new and empty, or left by a previous run), or with a read-only rsr.lock in a writable one, or missing under a 0555 parent, exits 1 with 'The data directory is not writable', never 'another server holds the lock' and never SQLite's own text", async () => {
   assert.notEqual(process.getuid?.(), 0, "must not run as root: root ignores chmod, so nothing would be read-only");
   const fresh = mkdtempSync(join(tmpdir(), "rsr-e2e-ro-new-"));
   const used = mkdtempSync(join(tmpdir(), "rsr-e2e-ro-used-"));
   const lockRo = mkdtempSync(join(tmpdir(), "rsr-e2e-ro-lock-"));
+  const roParent = mkdtempSync(join(tmpdir(), "rsr-e2e-ro-parent-")); // Argus L2 on 5ea231d: <parent 0555>/data does not exist
+  const missing = join(roParent, "data");
   const appTs = pathToFileURL(join(REPO_ROOT, "src", "server", "app.ts")).href;
   // A previous run: the real app start leaves rsr.lock, db/ (with the database) and images/ behind.
   for (const d of [used, lockRo]) {
@@ -405,24 +428,25 @@ test("A1 pin 19 (d), line 370 (Argus L1 and L3 on 0e2f1f4): starting the server 
     assert.ok(readdirSync(d).includes("rsr.lock") && readdirSync(d).includes("db"), readdirSync(d).join(","));
   }
   const lockMode = statSync(join(lockRo, "rsr.lock")).mode & 0o7777;
-  const restores = [makeReadOnly(fresh), makeReadOnly(used)];
+  const restores = [makeReadOnly(fresh), makeReadOnly(used), makeReadOnly(roParent)];
   chmodSync(join(lockRo, "rsr.lock"), 0o444); // only the lock file; the directory, db/ and images/ stay writable
   restores.push(() => chmodSync(join(lockRo, "rsr.lock"), lockMode));
   try {
     let k = 0;
-    for (const [label, dir] of [["new, empty, 0555", fresh], ["left by a previous run, 0555/0444", used], ["writable, but rsr.lock 0444", lockRo]] as const) {
+    for (const [label, dir, names] of [["new, empty, 0555", fresh, join(fresh, "rsr.lock")], ["left by a previous run, 0555/0444", used, join(used, "rsr.lock")],
+      ["writable, but rsr.lock 0444", lockRo, join(lockRo, "rsr.lock")], ["missing, under a 0555 parent", missing, `cannot create or write ${missing}, EACCES`]] as const) {
       const providerCalls = mockSeen.length;
       const { code, out } = await startAndAwaitExit({ ...startEnv, RSR_DATA_DIR: dir }, port + 700 + k++);
       assert.equal(code, 1, `${label}: the server must exit 1:\n${out}`);
       assert.match(out, /refusing to start: The data directory is not writable: /, label);
-      assert.ok(out.includes(join(dir, "rsr.lock")), `${label}: names the lock file:\n${out}`);
+      assert.ok(out.includes(names), `${label}: names ${names}:\n${out}`);
       assert.doesNotMatch(out, /Another Red Social Room server|already using the data directory/, label);
       assert.doesNotMatch(out, /unable to open database file|attempt to write a readonly database|Failed to prepare server/, label);
       assert.equal(mockSeen.length, providerCalls, `${label}: no provider call (not even the free key check)`);
     }
   } finally {
     for (const r of restores) r();
-    for (const d of [fresh, used, lockRo]) rmSync(d, { recursive: true, force: true });
+    for (const d of [fresh, used, lockRo, roParent]) rmSync(d, { recursive: true, force: true });
   }
 });
 

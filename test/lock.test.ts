@@ -175,9 +175,11 @@ test("Argus L1: two real app processes on one data directory - the second exits 
     assert.equal(second.status, 1, second.stdout + second.stderr);
     assert.doesNotMatch(second.stdout, /second up/);
     assert.match(second.stderr, new RegExp(`refusing to start: Another Red Social Room server \\(pid ${first.pid}\\) is already using the data directory`));
-    const gone = new Promise((r) => first.on("exit", r));
-    first.kill("SIGKILL");
-    await gone;
+    if (first.exitCode === null && first.signalCode === null) { // an exited child never emits "exit" again
+      const gone = new Promise((r) => first.on("exit", r));
+      first.kill("SIGKILL");
+      await gone;
+    }
     const third = spawnSync(process.execPath, [...NODE_ARGS, `import { startApp } from ${JSON.stringify(APP_TS)}; startApp(); console.log("third up");`], { env: childEnv(dir), encoding: "utf8", timeout: 20000, killSignal: "SIGKILL" });
     assert.equal(third.status, 0, third.stderr);
     assert.match(third.stdout, /third up/);
