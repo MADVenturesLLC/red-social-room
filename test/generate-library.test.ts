@@ -2,7 +2,7 @@
 // real-person check (D1/F10/G7; Amendment 1 section 4 line 278) and storage failure (F16).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { runGenerate } from "../src/server/generate.ts";
@@ -12,6 +12,8 @@ import { storeIo } from "../src/server/store.ts";
 import { inspectImage } from "../spike/lib/image.ts";
 import { PROMPTS } from "../spike/prompts.ts";
 import { makeApp, fakeXai, sampleJpeg, ledgerRows } from "./helpers.ts";
+import { nameListMethod } from "../src/server/prompt-check.ts";
+import { REPO_ROOT } from "../src/server/config.ts";
 
 async function withApp(fn: (t: ReturnType<typeof makeApp>, x: ReturnType<typeof fakeXai>) => Promise<void>, o: { names?: string | null; switches?: Record<string, unknown> } = {}) {
   const x = fakeXai();
@@ -103,6 +105,26 @@ test("P1c default: an empty name list counts as 'can't run' and blocks", () => w
   assert.equal(v.message, "Prompt check unavailable. Retry.");
   assert.equal(x.requests.length, 0);
 }, { names: "# nothing here\n\n" }));
+
+test("A1 pin 9, line 360: the shipped name list has exactly one seed name, and it blocks", () => withApp(async (t, x) => {
+  const shipped = join(REPO_ROOT, "config", "real-person-names.txt");
+  const names = readFileSync(shipped, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  assert.deepEqual(names, ["Tom Hanks"]);
+  t.app.promptMethod = nameListMethod(shipped);
+  assert.equal((await runGenerate(t.app, { prompt: "Tom Hanks waving", ratio: "1:1" })).status, "blocked");
+  assert.equal(x.requests.length, 0);
+}));
+
+test("A1 pin 9, line 360: an unreadable name list (no read permission) blocks 'Prompt check unavailable. Retry.', nothing sent", { skip: process.getuid?.() === 0 ? "root ignores file modes" : false }, () => withApp(async (t, x) => {
+  chmodSync(t.namesFile, 0o000);
+  try {
+    const v = await runGenerate(t.app, { prompt: "a quiet lake", ratio: "1:1" });
+    assert.equal(v.status, "not_sent");
+    assert.equal(v.message, "Prompt check unavailable. Retry.");
+    assert.equal(x.requests.length, 0);
+    assert.equal(ledgerRows(t.app).length, 0);
+  } finally { chmodSync(t.namesFile, 0o600); }
+}));
 
 test("P1c switch send_labeled: an unavailable check sends and labels the tile (config flips it, not code)", () => withApp(async (t, x) => {
   const v = await runGenerate(t.app, { prompt: "a quiet lake", ratio: "1:1" });

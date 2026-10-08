@@ -43,6 +43,11 @@ test("a malformed key is refused and the error text never contains what was type
   assert.equal(k.status().set, false);
 }));
 
+test("scrub also removes any bearer token, whatever its format (case-insensitive 'Bearer')", () => withDir((dir) => {
+  const k = new KeyStore({ secretsDir: join(dir, "s"), env: {} });
+  assert.equal(k.scrub("Authorization: Bearer abc.DEF-123_xyz=, then bearer zz9 ok"), "Authorization: Bearer [REDACTED], then bearer [REDACTED] ok");
+}));
+
 test("scrub removes every known key value and anything shaped like an xAI key", () => withDir((dir) => {
   const k = new KeyStore({ secretsDir: dir, env: { XAI_API_KEY: DUMMY_KEY, GEMINI_API_KEY: "dummyg_TESTONLY_q8Zr3LmPw0XkVt5N" } });
   const out = k.scrub(`a ${DUMMY_KEY} b dummyg_TESTONLY_q8Zr3LmPw0XkVt5N c xai-UNKNOWNbutKeyShaped1234567890 d`);

@@ -17,6 +17,8 @@ export class KeyRejectedInput extends Error {
 
 const KEY_SHAPE = /^[A-Za-z0-9._-]{20,256}$/;
 const XAI_KEY_PATTERN = /xai-[A-Za-z0-9]{16,}/g;
+/** Any bearer credential (e.g. an echoed Authorization header), whatever its format. */
+const BEARER_PATTERN = /\b(Bearer)\s+[A-Za-z0-9._~+\/=-]+/gi;
 
 export class KeyStore {
   readonly #file: string;
@@ -84,6 +86,6 @@ export class KeyStore {
     let out = s;
     const vals = [this.#saved(), this.#envXai, ...this.#envOthers].filter((v): v is string => !!v && v.length >= 8);
     for (const v of vals) if (out.includes(v)) out = out.split(v).join("[REDACTED]");
-    return out.replace(XAI_KEY_PATTERN, "[REDACTED]");
+    return out.replace(XAI_KEY_PATTERN, "[REDACTED]").replace(BEARER_PATTERN, "$1 [REDACTED]");
   }
 }

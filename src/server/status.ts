@@ -1,5 +1,5 @@
 // What the Create card and Settings page show (no secrets: key status is source + last 4 only).
-import { monthTotals, fmtUsd, type MonthTotals } from "./ledger.ts";
+import { monthTotals, fmtUsd, priceDrifts, type MonthTotals, type PriceDrift } from "./ledger.ts";
 import { estimate } from "./prices.ts";
 import { qualityFor, resolutionFor } from "./config.ts";
 import { MODEL } from "./xai/adapter.ts";
@@ -7,7 +7,7 @@ import type { AppDeps } from "./generate.ts";
 import type { KeyStatus } from "./keys.ts";
 
 export interface CreatorStatus { name: string; model: string; priceText: string; estimateMicros: number; state: "ready" | "no_key" | "key_unchecked" | "cap_reached"; stateText: string }
-export interface AppStatus { key: KeyStatus & { checked: boolean; checkOk: boolean; versionListing: string | null; checkMessage: string | null }; creator: CreatorStatus; totals: MonthTotals; totalsText: { counted: string; held: string; cap: string } }
+export interface AppStatus { key: KeyStatus & { checked: boolean; checkOk: boolean; versionListing: string | null; checkMessage: string | null }; creator: CreatorStatus; totals: MonthTotals; totalsText: { counted: string; held: string; cap: string }; priceDrift: PriceDrift[] }
 
 export function appStatus(d: AppDeps): AppStatus {
   const key = d.keys.status();
@@ -24,5 +24,6 @@ export function appStatus(d: AppDeps): AppStatus {
     creator: { name: "Grok Imagine 2.0", model: MODEL, priceText: `${fmtUsd(est.micros)} / image`, estimateMicros: est.micros, state, stateText },
     totals,
     totalsText: { counted: fmtUsd(totals.countedMicros), held: fmtUsd(totals.heldMicros), cap: fmtUsd(totals.capMicros) },
+    priceDrift: priceDrifts(d.db),
   };
 }

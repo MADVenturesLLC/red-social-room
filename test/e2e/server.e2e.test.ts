@@ -49,7 +49,7 @@ before(async () => {
       if (req.url === "/v1/image-generation-models") return res.end(JSON.stringify({ models: [{ id: "grok-imagine-image-2.0", version: "1.0", fingerprint: "fp_e2e" }] }));
       if (req.url === "/v1/images/generations" && req.method === "POST") {
         res.setHeader("x-request-id", "req-e2e");
-        return res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 400000000 } }));
+        return res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: body.includes("medium-bill") ? 600000000 : 400000000 } }));
       }
       res.statusCode = 404; res.end("{}");
     });
@@ -99,6 +99,16 @@ test("A1 over HTTP: make an image, save it, find it in the Library by a word fro
   assert.equal(api.posts.length, 1);
   // The server used the key from its own environment when calling xAI.
   assert.ok(mockSeen.some((m) => m.path === "/v1/images/generations" && m.auth === `Bearer ${DUMMY_KEY}`));
+});
+
+test("A1 pin 2, line 353 / F22: a call billed $0.06 against the $0.04 reservation shows the price drift notice in Settings -> Spend", async () => {
+  const before = await record("GET /settings (before drift)", await fetch(`${base}/settings`));
+  assert.doesNotMatch(before, /Price drift/);
+  const g = JSON.parse(await record("POST /api/generate (medium bill)", await post("/api/generate", { prompt: "a lighthouse at dusk medium-bill", ratio: "1:1" })));
+  assert.equal(g.status, "ok", JSON.stringify(g));
+  assert.equal(g.costText, "$0.06");
+  const html = await record("GET /settings (after drift)", await fetch(`${base}/settings`));
+  assert.match(html, /Price drift: xAI grok-imagine-image-2\.0 generate 1k\/low billed \$0\.0600 against a \$0\.0400 reservation/);
 });
 
 test("Settings shows only the last 4; saving a new key never echoes it; the new key is used server-side", async () => {

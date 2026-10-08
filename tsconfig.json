@@ -12,7 +12,8 @@
     "skipLibCheck": true,
     "jsx": "react-jsx",
     "isolatedModules": true,
-    "types": ["node"]
+    "types": ["node"],
+    "resolveJsonModule": true
   },
   "include": ["spike/**/*.ts", "src/**/*.ts", "src/**/*.tsx", "test/**/*.ts"],
   "exclude": ["node_modules", ".next"]

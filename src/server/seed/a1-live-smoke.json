@@ -1,0 +1,32 @@
+{
+  "name": "a1-live-smoke",
+  "about": "The one paid Grok generate made on 2026-10-07 by the A1 build's live smoke test (built app, throwaway database). Seeded so the cap counts it from the first start, next to the 10 spike rows. Pinned by Surface, room 2026-10-07 11:28 PM ET.",
+  "source_log": "red-social-room-logs/a1-live-smoke.out",
+  "source_log_note": "That log sits outside this repo (/workspace/red-social-room-logs on the build box) and is not committed. The row below is copied from its 'ledger:' line.",
+  "entries": [
+    {
+      "id": "b207281e-75d2-49dc-a032-ab176690b5df",
+      "created_at": "2026-10-07T23:26:04-04:00",
+      "month_ny": "2026-10",
+      "provider": "xai",
+      "model": "grok-imagine-image-2.0",
+      "kind": "generate",
+      "resolution": "1k",
+      "quality": "low",
+      "generation_id": "a573b044-ebdc-4511-a56a-8f5a1b75b323",
+      "attempt": 1,
+      "estimate_micro_usd": 40000,
+      "estimate_source": "prices.json xai/grok-imagine-image-2.0/generate/1k/low $0.04 (read 2026-10-03)",
+      "status": "settled",
+      "actual_micro_usd": 40000,
+      "cost_source": "billed_provider",
+      "billed_ticks": 400000000,
+      "cost_basis": "billed: usage.cost_in_usd_ticks=400000000 (https://docs.x.ai/developers/cost-tracking)",
+      "provider_request_id": "cb478eea-cf55-96df-bc20-38346f7f013b",
+      "provider_trace": { "cf-ray": "a4720ac1bd880ccf-PDX", "traceparent": "00-0222bd6b1d571270ae2b269edf6727c0-2b73da5700000abf-01" },
+      "http_status": 200,
+      "outcome": "ok",
+      "settled_at": "2026-10-07T23:26:19-04:00"
+    }
+  ]
+}

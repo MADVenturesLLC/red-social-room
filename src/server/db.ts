@@ -1,11 +1,14 @@
 // SQLite (WAL) database: schema, FTS5 search index kept in sync by triggers (TECH-PLAN-v1.md:77),
-// append-only spend ledger (Amendment 1 section 3.4) and the one-time import of the 10 spike rows (item 18).
+// append-only spend ledger (Amendment 1 section 3.4) and the one-time import of the 10 spike rows (item 18)
+// plus the seeded A1 live smoke row (src/server/seed/a1-live-smoke.json; Amendment 1 A1 pins 8 and 14, lines 359 and 365).
 // Uses Node's built-in node:sqlite (no native add-on to build).
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { validateLedgerFile, toMicros, type LedgerEntry } from "../../spike/lib/ledger.ts";
 import { REPO_ROOT } from "./config.ts";
+// Bundled into the build (no runtime file path, so it is present in the Docker image too).
+import a1LiveSmokeSeed from "./seed/a1-live-smoke.json" with { type: "json" };
 
 export type DB = DatabaseSync;
 
@@ -136,13 +139,29 @@ CREATE VIEW IF NOT EXISTS spend_by_month_provider AS
 
 export const SPIKE_LEDGER_PATH = join(REPO_ROOT, "spike-results", "ledger.json");
 
-export function openDb(path: string, opts: { spikeLedgerPath?: string | null } = {}): DB {
+/** Ledger rows seeded from outside the spike file (A1 pin 14, line 365), imported once together with it. */
+export interface SeedFile {
+  name: string; source_log: string;
+  entries: Array<{
+    id: string; created_at: string; month_ny: string; provider: string; model: string; kind: string; resolution: string | null; quality: string | null;
+    generation_id: string | null; attempt: number; estimate_micro_usd: number; estimate_source: string; status: string; actual_micro_usd: number;
+    cost_source: string; billed_ticks: number; cost_basis: string; provider_request_id: string; provider_trace: Record<string, string> | null;
+    http_status: number; outcome: string; settled_at: string;
+  }>;
+}
+export const LEDGER_SEEDS: readonly SeedFile[] = Object.freeze([a1LiveSmokeSeed as SeedFile]);
+
+/**
+ * opts.spikeLedgerPath: null skips the one-time import (unit tests that need an empty ledger).
+ * opts.seeds: defaults to LEDGER_SEEDS whenever the spike import runs, so both land on the very first start.
+ */
+export function openDb(path: string, opts: { spikeLedgerPath?: string | null; seeds?: readonly SeedFile[] } = {}): DB {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = FULL;");
   db.exec(SCHEMA);
   const spike = opts.spikeLedgerPath === undefined ? SPIKE_LEDGER_PATH : opts.spikeLedgerPath;
-  if (spike) importSpikeLedger(db, spike);
+  importLedgerOnce(db, spike, opts.seeds ?? (spike ? LEDGER_SEEDS : []));
   return db;
 }
 
@@ -168,32 +187,93 @@ function costSourceFromBasis(basis: string | null, provider: string): string | n
 }
 
 /**
- * Amendment 1 item 18: import the 10 spike rows once, in one transaction, so they count toward the same
- * $50 October cap. The file is validated with the spike's own validator; a bad file stops startup (fail closed).
+ * Amendment 1 item 18 + A1 pins 8 (line 359) and 14 (line 365): the one-time import of the 10 spike rows and every seed file
+ * (the A1 live smoke row), with their "imported" markers, runs in ONE transaction (BEGIN IMMEDIATE). Everything
+ * is validated before the transaction starts (a bad file stops startup, fail closed); a throw partway through
+ * rolls back every row and marker, so the import simply runs again on the next start. Already-imported parts
+ * (marker present) are skipped, so it never runs twice.
  */
-export function importSpikeLedger(db: DB, path: string): number {
-  const done = db.prepare("SELECT value FROM meta WHERE key = 'spike_ledger_imported'").get() as { value: string } | undefined;
-  if (done) return 0;
-  const f = JSON.parse(readFileSync(path, "utf8")) as { entries: LedgerEntry[] };
-  const errs = validateLedgerFile(f);
-  if (errs.length) throw new Error(`spike ledger import refused: ${path} failed validation: ${errs.slice(0, 5).join("; ")}`);
+export function importLedgerOnce(db: DB, spikePath: string | null, seeds: readonly SeedFile[]): number {
+  const spikeDone = !spikePath || !!db.prepare("SELECT 1 FROM meta WHERE key = 'spike_ledger_imported'").get();
+  let spike: LedgerEntry[] = [];
+  if (!spikeDone) {
+    const f = JSON.parse(readFileSync(spikePath!, "utf8")) as { entries: LedgerEntry[] };
+    const errs = validateLedgerFile(f);
+    if (errs.length) throw new Error(`spike ledger import refused: ${spikePath} failed validation: ${errs.slice(0, 5).join("; ")}`);
+    spike = f.entries;
+  }
+  const todo = seeds.filter((s) => {
+    const errs = validateSeed(s);
+    if (errs.length) throw new Error(`ledger seed import refused: ${errs.slice(0, 5).join("; ")}`);
+    return !db.prepare("SELECT 1 FROM meta WHERE key = ?").get(`seed_imported:${s.name}`);
+  });
+  if (spikeDone && todo.length === 0) return 0;
+  return tx(db, () => {
+    let n = 0;
+    if (!spikeDone) {
+      n += insertSpikeRows(db, spike);
+      db.prepare("INSERT INTO meta (key, value) VALUES ('spike_ledger_imported', ?)").run(JSON.stringify({ rows: spike.length, at: new Date().toISOString() }));
+    }
+    for (const s of todo) {
+      n += insertSeedRows(db, s);
+      db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)").run(`seed_imported:${s.name}`, JSON.stringify({ rows: s.entries.length, at: new Date().toISOString() }));
+    }
+    return n;
+  });
+}
+
+function insertSpikeRows(db: DB, entries: LedgerEntry[]): number {
   const ins = db.prepare(`INSERT INTO spend_ledger (id, created_at, month_ny, provider, model, kind, resolution, quality, generation_id, attempt,
     estimate_micro_usd, estimate_source, status, actual_micro_usd, cost_source, cost_detail, http_status, outcome, settled_at, note, imported_from)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  return tx(db, () => {
-    for (const e of f.entries) {
-      const kind = kindFromLabel(e.label);
-      const status = e.status;
-      ins.run(e.id, e.created_at, e.month, e.provider, e.model, kind,
-        "1k", e.provider === "xai" ? (kind === "generate" ? "low" : "medium") : null,
-        toMicros(e.estimate_usd), `spike: ${e.estimate_basis}`.slice(0, 500), status,
-        status === "settled" && e.actual_usd !== null ? toMicros(e.actual_usd) : null,
-        status === "settled" ? costSourceFromBasis(e.cost_basis, e.provider) : null,
-        JSON.stringify({ spike_label: e.label, spike_cost_basis: e.cost_basis }),
-        e.http_status, status === "settled" ? "ok" : "unresolved",
-        e.reconciled_at ?? null, null, "spike-results/ledger.json");
-    }
-    db.prepare("INSERT INTO meta (key, value) VALUES ('spike_ledger_imported', ?)").run(JSON.stringify({ rows: f.entries.length, at: new Date().toISOString() }));
-    return f.entries.length;
-  });
+  for (const e of entries) {
+    const kind = kindFromLabel(e.label);
+    const status = e.status;
+    ins.run(e.id, e.created_at, e.month, e.provider, e.model, kind,
+      "1k", e.provider === "xai" ? (kind === "generate" ? "low" : "medium") : null,
+      toMicros(e.estimate_usd), `spike: ${e.estimate_basis}`.slice(0, 500), status,
+      status === "settled" && e.actual_usd !== null ? toMicros(e.actual_usd) : null,
+      status === "settled" ? costSourceFromBasis(e.cost_basis, e.provider) : null,
+      JSON.stringify({ spike_label: e.label, spike_cost_basis: e.cost_basis }),
+      e.http_status, status === "settled" ? "ok" : "unresolved",
+      e.reconciled_at ?? null, null, "spike-results/ledger.json");
+  }
+  return entries.length;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const NY_TIME_RE = /^(\d{4}-\d{2})-\d{2}T\d{2}:\d{2}:\d{2}-0[45]:00$/;
+
+/** Every seed row must be a billed, settled provider call whose amount equals its ticks (1 tick = 1e-10 USD). */
+export function validateSeed(s: SeedFile): string[] {
+  const errs: string[] = [];
+  if (!s || typeof s.name !== "string" || !/^[a-z0-9-]+$/.test(s.name)) return ["seed name missing or not [a-z0-9-]"];
+  if (typeof s.source_log !== "string" || s.source_log.startsWith("/") || s.source_log.includes("..")) errs.push(`${s.name}: source_log must be a relative path`);
+  if (!Array.isArray(s.entries) || s.entries.length === 0) return [...errs, `${s.name}: no entries`];
+  for (const e of s.entries) {
+    const at = `${s.name}/${e?.id}`;
+    if (!UUID_RE.test(e.id)) errs.push(`${at}: id is not a UUID`);
+    const m = NY_TIME_RE.exec(e.created_at);
+    if (!m || m[1] !== e.month_ny) errs.push(`${at}: created_at must be New York time in month_ny`);
+    if (e.provider !== "xai" && e.provider !== "google") errs.push(`${at}: unknown provider`);
+    if (e.status !== "settled" || e.cost_source !== "billed_provider") errs.push(`${at}: a seed row must be settled from a provider bill`);
+    if (!Number.isSafeInteger(e.billed_ticks) || e.billed_ticks < 0 || e.billed_ticks % 10_000 !== 0 || e.billed_ticks / 10_000 !== e.actual_micro_usd) errs.push(`${at}: actual_micro_usd must equal billed_ticks / 10000`);
+    if (!Number.isSafeInteger(e.estimate_micro_usd) || e.estimate_micro_usd <= 0) errs.push(`${at}: estimate must be a positive whole micro-USD`);
+    if (typeof e.provider_request_id !== "string" || !e.provider_request_id) errs.push(`${at}: provider_request_id missing`);
+  }
+  return errs;
+}
+
+function insertSeedRows(db: DB, s: SeedFile): number {
+  const ins = db.prepare(`INSERT INTO spend_ledger (id, created_at, month_ny, provider, model, kind, resolution, quality, generation_id, attempt,
+    estimate_micro_usd, estimate_source, status, actual_micro_usd, cost_source, cost_detail, provider_request_id, provider_trace, http_status, outcome, settled_at, note, imported_from)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const e of s.entries) {
+    ins.run(e.id, e.created_at, e.month_ny, e.provider, e.model, e.kind, e.resolution, e.quality, e.generation_id, e.attempt,
+      e.estimate_micro_usd, e.estimate_source, e.status, e.actual_micro_usd, e.cost_source,
+      JSON.stringify({ basis: e.cost_basis, ticks: e.billed_ticks, seed: `src/server/seed/${s.name}.json` }),
+      e.provider_request_id, e.provider_trace ? JSON.stringify(e.provider_trace) : null, e.http_status, e.outcome, e.settled_at,
+      `seeded from ${s.source_log} (not in the repo)`, s.source_log);
+  }
+  return s.entries.length;
 }

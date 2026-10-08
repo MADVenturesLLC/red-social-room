@@ -32,6 +32,12 @@ export default function SettingsPage() {
         <p className="muted">By provider: {Object.entries(s.totals.byProvider).map(([p, m]) => `${p} ${fmtUsd(m)}`).join(", ") || "none"}</p>
         {s.totals.warn ? <p className="warn">Spend is at 80% or more of the cap.</p> : null}
         <CapForm capUsd={s.totals.capMicros / 1e6} />
+        {s.priceDrift.length > 0 ? (
+          <div data-testid="price-drift">
+            <h3>Price drift ({s.priceDrift.length})</h3>
+            {s.priceDrift.map((d) => <p key={d.ledgerId} className="warn">{d.at}: {d.text}</p>)}
+          </div>
+        ) : null}
         <h3>Unresolved ({unresolved.length})</h3>
         <p className="muted">Calls that may have been charged. Each stays held against the cap until it is checked against the provider console (marking them comes in A2).</p>
         <table><tbody>

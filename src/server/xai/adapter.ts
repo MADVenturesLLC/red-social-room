@@ -76,6 +76,18 @@ function providerText(r: AttemptResult, keys: KeyStore): string {
   return keys.scrub(t).slice(0, 500);
 }
 
+/** Characters of a 429 body kept in the ledger row's note (Surface ruling, room 2026-10-07 11:38 PM ET, future A1 pin 15). */
+export const BODY_NOTE_CHARS = 500;
+
+/**
+ * The first 500 characters (Unicode code points, never a split surrogate pair) of a provider body, after the key
+ * scrubber (known key values, xAI-key-shaped strings, any "Bearer <token>"). Scrubbing runs on the whole body
+ * first, so a key straddling the cut is still removed.
+ */
+export function bodyNote(text: string, keys: KeyStore): string {
+  return Array.from(keys.scrub(text ?? "")).slice(0, BODY_NOTE_CHARS).join("");
+}
+
 // ---- free key check (F1, item 19) ----
 
 export type KeyCheckResult = { ok: true; versionListing: string | null } | { ok: false; code: "auth" | "unavailable" | "bad_input" | "no_key"; message: string };
@@ -110,6 +122,9 @@ async function checkKeyInner(d: XaiDeps, opts: { force?: boolean }): Promise<Key
   d.keyCheck.ok = true; d.keyCheck.versionListing = versionListing;
   return { ok: true, versionListing };
 }
+
+/** Words that mark an xAI 429 as a quota/billing problem rather than a rate limit (interim; xAI documents no shape). */
+export const QUOTA_429_RE = /quota|billing|credits?\b|spending[ _-]?limit|insufficient[ _-]?(funds|balance)|payment/i;
 
 export function invalidateKeyCheck(d: XaiDeps): void { d.keyCheck.ok = false; }
 
@@ -203,14 +218,17 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
     try { cost = attemptCost(r, est.micros, b64 !== null, d.switches); } catch (e) {
       cost = { usd: null, basis: `unresolved: cost rule threw (${(e as Error).name})`, billed: false };
     }
+    // Every 429 (quota-matched or not) keeps its scrubbed body excerpt so the quota word list can be tightened
+    // once a real xAI quota body is seen (future A1 pin 15).
+    const note = r.status === 429 ? bodyNote(r.text, d.keys) : null;
     let costInfo: CostInfo;
     if (cost.usd === null) {
-      markUnresolved(d.db, id, { reason: cost.basis, providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome });
+      markUnresolved(d.db, id, { reason: cost.basis, providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome, note });
       costInfo = { micros: null, source: "unresolved", heldMicros: est.micros };
     } else {
       const micros = toMicros(cost.usd);
       const src = costSourceOf(cost);
-      settle(d.db, id, { actualMicros: micros, costSource: src, costDetail: JSON.stringify({ basis: cost.basis, ticks: j?.usage?.cost_in_usd_ticks ?? null }), providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome });
+      settle(d.db, id, { actualMicros: micros, costSource: src, costDetail: JSON.stringify({ basis: cost.basis, ticks: j?.usage?.cost_in_usd_ticks ?? null }), providerRequestId, providerTrace: trace, httpStatus: r.status, outcome: r.outcome, note });
       costInfo = { micros, source: src, heldMicros: 0 };
     }
     attempts.push({ clientRequestId: id, status: r.status, outcome: r.outcome, costMicros: costInfo.micros, costSource: costInfo.source });
@@ -229,6 +247,10 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
       const image = Buffer.from(b64, "base64");
       return { kind: "ok", image, mime: typeof first?.mime_type === "string" ? first.mime_type : null, clientRequestId: id, providerRequestId, providerTrace: trace, cost: costInfo, latencyMs: r.latency_ms, attempts, modelVersionListing: kc.versionListing, sentRatio: mapped.send };
     }
+    // Amendment 1 item 19 / F8 / A1 pin 10, line 361 / future A1 pin 15: a 429 that is about quota, credits or
+    // billing (xAI's shape is UNVERIFIED, so this matches the words in the body, case-insensitively) is a quota
+    // error, not a rate limit: no retry, and the key check re-runs before the next paid call.
+    if (st === 429 && QUOTA_429_RE.test(r.text ?? "")) { invalidateKeyCheck(d); return err("quota", "xAI quota or billing limit reached (HTTP 429) — check console.x.ai."); }
     if (st === 429) {
       const ra = parseRetryAfter(r.headers["retry-after"]);
       const asked = ra !== null ? ` xAI asked to wait ${Math.ceil(ra)} s.` : "";

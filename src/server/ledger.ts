@@ -88,12 +88,45 @@ export function settle(db: DB, id: string, s: SettleInput): void {
   const r = db.prepare(`UPDATE spend_ledger SET status = 'settled', actual_micro_usd = ?, cost_source = ?, cost_detail = ?, provider_request_id = ?, provider_trace = ?, http_status = ?, outcome = ?, settled_at = ?, note = ? WHERE id = ? AND status = 'reserved'`)
     .run(s.actualMicros, s.costSource, s.costDetail ?? null, s.providerRequestId ?? null, s.providerTrace ?? null, s.httpStatus, s.outcome, isoNY(), s.note ?? null, id);
   if (Number(r.changes) !== 1) throw new Error(`ledger row ${id} is not in state reserved; not settled`);
+  if (s.costSource === "billed_provider") notePriceDrift(db, id);
+}
+
+/** Amendment 1 item 2(e) / F22 (line 205): a bill more than $0.005 over its reservation. */
+export const PRICE_DRIFT_MICROS = 5_000;
+
+/**
+ * F22: when the billed amount exceeds the reservation by more than $0.005, record a `price_drift` event with
+ * both numbers for Settings -> Spend. The ledger keeps the billed amount (settle above); prices.json is never
+ * changed automatically. The next reservation already rises to the highest bill via item 2(d) (prices.ts).
+ * A1 pin 2, line 353: this is what catches xAI billing medium ($0.06) instead of low ($0.04).
+ */
+function notePriceDrift(db: DB, id: string): void {
+  const row = db.prepare("SELECT provider, model, kind, resolution, quality, estimate_micro_usd AS est, actual_micro_usd AS act, provider_request_id FROM spend_ledger WHERE id = ?").get(id) as
+    { provider: string; model: string; kind: string; resolution: string | null; quality: string | null; est: number; act: number; provider_request_id: string | null };
+  if (row.act - row.est <= PRICE_DRIFT_MICROS) return;
+  db.prepare("INSERT INTO events (created_at, kind, detail) VALUES (?, 'price_drift', ?)").run(isoNY(), JSON.stringify({
+    ledger_id: id, provider: row.provider, model: row.model, kind: row.kind, resolution: row.resolution, quality: row.quality,
+    reserved_micro_usd: row.est, billed_micro_usd: row.act, provider_request_id: row.provider_request_id,
+  }));
+}
+
+export interface PriceDrift { at: string; ledgerId: string; text: string }
+
+/** Recent F22 notices, newest first, as Settings -> Spend shows them. */
+export function priceDrifts(db: DB, limit = 20): PriceDrift[] {
+  const rows = db.prepare("SELECT created_at, detail FROM events WHERE kind = 'price_drift' ORDER BY id DESC LIMIT ?").all(limit) as Array<{ created_at: string; detail: string }>;
+  return rows.map((r) => {
+    const d = JSON.parse(r.detail) as { ledger_id: string; provider: string; model: string; kind: string; resolution: string | null; quality: string | null; reserved_micro_usd: number; billed_micro_usd: number };
+    const who = d.provider === "xai" ? "xAI" : d.provider === "google" ? "Google" : d.provider;
+    const key = [d.kind, [d.resolution, d.quality].filter(Boolean).join("/")].filter(Boolean).join(" ");
+    return { at: r.created_at, ledgerId: d.ledger_id, text: `Price drift: ${who} ${d.model} ${key} billed ${fmtUsd4(d.billed_micro_usd)} against a ${fmtUsd4(d.reserved_micro_usd)} reservation (Ref ${d.ledger_id.slice(0, 8)}). prices.json was not changed; the next reservation uses the higher bill.` };
+  });
 }
 
 /** Cost unknown after a possible send (G3): keep the full reservation counted until Michael reconciles it. */
-export function markUnresolved(db: DB, id: string, s: { reason: string; providerRequestId?: string | null; providerTrace?: string | null; httpStatus: number | null; outcome: string }): void {
-  const r = db.prepare(`UPDATE spend_ledger SET status = 'unresolved', cost_detail = ?, provider_request_id = ?, provider_trace = ?, http_status = ?, outcome = ? WHERE id = ? AND status = 'reserved'`)
-    .run(JSON.stringify({ reason: s.reason }), s.providerRequestId ?? null, s.providerTrace ?? null, s.httpStatus, s.outcome, id);
+export function markUnresolved(db: DB, id: string, s: { reason: string; providerRequestId?: string | null; providerTrace?: string | null; httpStatus: number | null; outcome: string; note?: string | null }): void {
+  const r = db.prepare(`UPDATE spend_ledger SET status = 'unresolved', cost_detail = ?, provider_request_id = ?, provider_trace = ?, http_status = ?, outcome = ?, note = ? WHERE id = ? AND status = 'reserved'`)
+    .run(JSON.stringify({ reason: s.reason }), s.providerRequestId ?? null, s.providerTrace ?? null, s.httpStatus, s.outcome, s.note ?? null, id);
   if (Number(r.changes) !== 1) throw new Error(`ledger row ${id} is not in state reserved; not marked unresolved`);
 }
 

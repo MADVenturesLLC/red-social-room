@@ -54,7 +54,7 @@ TECH-PLAN-v1.md section 9 A1, as amended by Amendment 1 section 4: prompt -> Gro
 
 - Code: `src/server/` (DB, ledger, key store, prompt check, xAI adapter), `src/app/` (pages and API routes). Reuses `spike/lib/xai-shape.ts` (cost rule), `spike/lib/ledger.ts` (micro-USD rounding, New York month), `spike/lib/image.ts`.
 - Config (no code change needed): `config/switches.json` (pending Founder decisions P1/P4/P5/P6/P7; a value A1 doesn't build stops startup), `config/prices.json` (pre-call estimates), `config/real-person-names.txt` (one name per line; an empty or missing list blocks every prompt).
-- Data (`RSR_DATA_DIR`, default `./data`, `/data` in Docker): `db/rsr.sqlite` (WAL, FTS5), `images/<aa>/<sha256>.<ext>`, `secrets/xai_api_key` (mode 600, only if saved from Settings). On first start the 10 spike rows from `spike-results/ledger.json` are imported into the spend ledger.
+- Data (`RSR_DATA_DIR`, default `./data`, `/data` in Docker): `db/rsr.sqlite` (WAL, FTS5), `images/<aa>/<sha256>.<ext>`, `secrets/xai_api_key` (mode 600, only if saved from Settings). On first start the 10 spike rows from `spike-results/ledger.json` and the one billed A1 live smoke call (`src/server/seed/a1-live-smoke.json`, $0.04, xAI request `cb478eea-cf55-96df-bc20-38346f7f013b`) are imported into the spend ledger in one transaction, so October starts at $0.5947 counted.
 
 ### Run it locally (no Docker)
 
