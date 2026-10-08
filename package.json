@@ -2,23 +2,37 @@
   "name": "red-social-room",
   "version": "0.0.0",
   "private": true,
-  "description": "MADVentures Red Social Room - Act 0 spike (provider scripts). No runtime dependencies.",
+  "description": "MADVentures Red Social Room - Act 0 spike scripts and the A1 app (Next.js, SQLite, Grok adapter).",
   "type": "module",
-  "engines": { "node": ">=22.18" },
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
+    "dev": "node spike/check-node.mjs && next dev",
+    "build": "node spike/check-node.mjs && next build",
+    "start": "node spike/check-node.mjs && next start -H 0.0.0.0 -p 3000",
     "check-node": "node spike/check-node.mjs",
     "typecheck": "node spike/check-node.mjs && tsc -p tsconfig.json",
-    "test": "node spike/check-node.mjs && node --test \"spike/test/*.test.ts\"",
+    "test": "node spike/check-node.mjs && node --disable-warning=ExperimentalWarning --test \"spike/test/*.test.ts\" \"test/*.test.ts\"",
     "check-secrets": "node spike/check-node.mjs && node spike/check-secrets.ts",
     "ledger": "node spike/check-node.mjs && node spike/ledger-report.ts",
     "ledger:init": "node spike/check-node.mjs && node spike/ledger-init.ts",
     "ledger:reconcile": "node spike/check-node.mjs && node spike/ledger-reconcile.ts",
     "preflight": "node spike/check-node.mjs && node spike/preflight.ts",
     "spike:xai": "node spike/check-node.mjs && node spike/xai.ts",
-    "spike:gemini": "node spike/check-node.mjs && node spike/gemini.ts"
+    "spike:gemini": "node spike/check-node.mjs && node spike/gemini.ts",
+    "test:e2e": "node spike/check-node.mjs && node --disable-warning=ExperimentalWarning --test \"test/e2e/*.e2e.test.ts\""
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "next": "16.4.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "sharp": "0.35.5"
   }
 }

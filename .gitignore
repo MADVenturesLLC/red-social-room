@@ -1,6 +1,7 @@
 # Secrets never enter the repo (TECH-PLAN-v1.md section 3, "Secrets")
 .env
 .env.*
+!.env.example
 .envrc
 .npmrc
 *.key
@@ -27,3 +28,8 @@ spike-results/ledger.lock
 *.tmp*
 # macOS (the app runs on the iMac first, FOUNDER-DECISIONS item 2)
 .DS_Store
+# A1 app: runtime data (SQLite, images, saved key), Next build output
+data/
+.next/
+next-env.d.ts
+*.tsbuildinfo
