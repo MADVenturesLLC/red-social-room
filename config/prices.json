@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "_comment": "Pre-call estimates only (Amendment 1 item 2b). Actual xAI cost comes from usage.cost_in_usd_ticks. Reservation = max(this row, highest settled bill in the ledger for the same provider/model/kind/resolution/quality) (item 2d).",
+  "rows": [
+    { "provider": "xai", "model": "grok-imagine-image-2.0", "kind": "generate", "resolution": "1k", "quality": "low", "usd": 0.04,
+      "source": "pricing[] in the free model listing (quality low, resolution 1k, price_per_image 400000000 ticks; spike-results/preflight/xai-image-generation-models.json) + observed bill 400000000 ticks (spike-results/xai/01b-generate-3x4.json)",
+      "read_on": "2026-10-03" },
+    { "provider": "xai", "model": "grok-imagine-image-2.0", "kind": "edit", "resolution": "1k", "quality": "medium", "usd": 0.07,
+      "source": "observed bill, 2 of 2 edits (spike-results/xai/02-edit-background-red.json, 03-edit-aspect-16x9.json). Not used in A1 (no edit yet).",
+      "read_on": "2026-10-03" }
+  ]
+}

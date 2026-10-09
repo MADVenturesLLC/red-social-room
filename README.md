@@ -1,12 +1,12 @@
 # MADVentures Red Social Room
 
-Act 0 spike only (see `spike-results/REPORT.md`). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
+Act 0 spike (see `spike-results/REPORT.md`) and the A1 app (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
 
 ## Requirements
 
 - **Node >= 22.18** (runs `.ts` directly via type stripping). On the box the default `node` is v20, which cannot run these scripts, so first:
   `export PATH=/home/box/node22/bin:$PATH` (Node 22.19). Every npm script starts with `spike/check-node.mjs`, which fails with this hint on an older Node.
-- No runtime dependencies. Dev only: `typescript` and `@types/node` (pinned in `package.json` / `package-lock.json`), installed with `npm ci`.
+- Runtime dependencies (A1 app): `next`, `react`, `react-dom`, `sharp`. Dev: `typescript`, `@types/node`, `@types/react`, `@types/react-dom`. All pinned in `package.json` / `package-lock.json` and installed with `npm ci`. The spike scripts themselves use only Node built-ins.
 - Paid scripts need `XAI_API_KEY` / `GEMINI_API_KEY` in the environment. Tests, typecheck and the leak scan's pattern rules need no keys and make no network calls.
 
 ## Offline (no network, no spend)
@@ -14,8 +14,9 @@ Act 0 spike only (see `spike-results/REPORT.md`). Plan: `docs/plan/TECH-PLAN-v1.
 ```
 npm ci                 # dev deps for the typecheck
 npm run typecheck      # tsc -p tsconfig.json (strict, noEmit)
-npm test               # node --test "spike/test/*.test.ts": spend guard, ledger validation, step outputs, scan rules, Gemini cost rule,
-                       # and the paid scripts run against a fake transport (spike/test/fixtures/fetch-stub.mjs, dummy keys, nothing sent)
+npm test               # node --test "spike/test/*.test.ts" "test/*.test.ts": the spike tests (spend guard, ledger validation, step outputs,
+                       # scan rules, Gemini cost rule, paid scripts against a fake transport) plus the A1 app unit tests (fake xAI,
+                       # dummy keys, nothing sent). npm run test:e2e builds and starts the app against a local fake xAI.
 npm run check-secrets  # leak scan: pattern rules always; exact key match too if the keys are in env (prints counts only)
 npm run ledger         # spend ledger view (shared $50/month cap, $3 spike cap)
 ```
@@ -47,3 +48,49 @@ Exit codes of `xai.ts` / `gemini.ts`: `0` finished (or stopped for a recorded re
 - Don't run two paid scripts at once: `reserve()` refuses while the ledger is locked; `settle()` waits up to ~5 s and, if still locked, writes the step's outputs and results.json entry and then stops with `LedgerBusy` (the reservation stays counted).
 - **Stale lock** (a crashed run leaves `spike-results/ledger.lock`; there is no TTL): if no spike script is running, delete `spike-results/ledger.lock`, then run `ledger-reconcile` for any row the LedgerBusy message named. `ledger-reconcile` needs the same lock, so it fails until the stale lock is gone.
 - Every load validates every ledger row (amounts present, non-negative, whole micro-USD; known status/provider; `YYYY-MM` month; `spike: true`). A bad row stops everything with `LedgerCorrupt`; restore the file from git rather than editing it by hand.
+
+## A1 app (Next.js + SQLite + Grok)
+
+TECH-PLAN-v1.md section 9 A1, as amended by Amendment 1 section 4: prompt -> Grok image -> Save to library -> search by prompt text, with the spend guard (one shared monthly cap, default $50), the real-person name-list check, and keys kept on the server.
+
+- Code: `src/server/` (DB, ledger, key store, prompt check, xAI adapter), `src/app/` (pages and API routes). Reuses `spike/lib/xai-shape.ts` (cost rule), `spike/lib/ledger.ts` (micro-USD rounding, New York month), `spike/lib/image.ts`.
+- Config (no code change needed): `config/switches.json` (pending Founder decisions P1/P4/P5/P6/P7; a value A1 doesn't build stops startup), `config/prices.json` (pre-call estimates), `config/real-person-names.txt` (one name per line; an empty or missing list blocks every prompt).
+- Data (`RSR_DATA_DIR`, default `./data`, `/data` in Docker): `db/rsr.sqlite` (WAL, FTS5), `images/<aa>/<sha256>.<ext>`, `secrets/xai_api_key` (mode 600, only if saved from Settings). On first start the 10 spike rows from `spike-results/ledger.json` and the one billed A1 live smoke call (`src/server/seed/a1-live-smoke.json`, $0.04, xAI request `cb478eea-cf55-96df-bc20-38346f7f013b`) are imported into the spend ledger in one transaction, so October starts at $0.5947 counted.
+
+One server per data directory, on one host (A1 pin 18, line 369 of Amendment 1 at `5c773d7`). Two containers or two hosts sharing one data directory are **not supported**.
+
+- **The startup lock.** At start the server holds an exclusive SQLite lock on `<data>/rsr.lock` for as long as it runs. The operating system drops it when the process ends for any reason (normal exit, crash, `kill -9`), so a leftover lock never blocks the next start and there is nothing to delete by hand. A second server on the same host and data directory waits about a second, then exits 1 with `refusing to start: Another Red Social Room server (pid N) is already using the data directory ...`. `<data>/rsr.lock.pid` only names the holder for that message; nothing decides on it, and a stale one is harmless.
+- **A data directory that is not writable** (A1 pin 19 (d), line 370 of Amendment 1 at `9a890fb`). At start, the lock cannot be taken there, so the server exits 1 with `refusing to start: The data directory is not writable: <dir> (cannot create or write <dir>/rsr.lock) ...` (never the "another server" message, and no raw SQLite text); the same applies if `db/` or `images/` is not writable. If the directory or the database stops being writable while the server runs, it keeps running, and every image request answers 500 `The data directory is not writable, so nothing was sent to the provider and nothing was charged.` before any provider call. This check covers the data directory, `db/`, the database files, `images/` and every existing `images/<xx>/` folder (an image's folder is named after its hash, which is only known once xAI has answered, so all of them are checked). Saving a key, the cap or a Library post on a data directory that is not writable answers 500 `The data directory is not writable, so nothing was saved.` Make it writable again and the next request goes through. A read-only `rsr.lock` counts as not writable: SQLite would open it read-only and report an "exclusive" lock to every process at once, so the lock makes a real write (`PRAGMA user_version`) to prove it really holds it, and refuses to start if it cannot.
+- **Interrupted and late calls.** At start, ledger rows still `reserved` from a server that stopped mid-call are listed as unresolved ("interrupted"). A call that finishes after its row left `reserved` is kept as a `late_result` event; the row stays unresolved (nothing settles automatically), and until it is reconciled the cap counts it at the larger of its estimate and the late bill, which Settings -> Unresolved shows next to the held amount.
+
+### Run it locally (no Docker)
+
+```
+export PATH=/home/box/node22/bin:$PATH   # Node >= 22.18
+npm ci
+npm run build && npm start               # http://127.0.0.1:3000 (binds 127.0.0.1 only, not the LAN); key from XAI_API_KEY or Settings
+npm test                                 # spike + app unit tests (no network, dummy keys)
+npm run test:e2e                         # next build + next start against a local fake xAI; key-leak scan
+```
+
+### Run it with Docker Compose + Tailscale Serve (untested on the build box: no Docker or Tailscale there)
+
+```
+cp .env.example .env && chmod 600 .env   # put XAI_API_KEY=... in it, or leave it empty and use Settings
+mkdir -p data                            # on Linux, if the container can't write it: sudo chown 1000:1000 data
+docker compose up -d --build             # listens on 127.0.0.1:3000 only
+tailscale serve --bg --https=443 http://127.0.0.1:3000
+tailscale serve status                   # shows https://<machine>.<tailnet>.ts.net/
+```
+
+Open the `https://<machine>.<tailnet>.ts.net/` URL on the phone (signed in to the same tailnet). To stop sharing: `tailscale serve --https=443 off`. The app has no login of its own; Tailscale is the only way in. `npm start` binds 127.0.0.1, and the compose file publishes the port on 127.0.0.1 only (inside the container the app listens on 0.0.0.0, `npm run start:container` / the Dockerfile `CMD`), so neither is reachable from the LAN. Tailscale Serve proxies to 127.0.0.1, so that is enough for it.
+
+### Allowed hosts (A1 pin 17, Amendment 1 line 368)
+
+Every page, API route and asset first checks the `Host` header (DNS-rebinding guard). The host name is compared without its port and case-insensitively. Allowed by default: `localhost`, `127.0.0.1`, `[::1]`. Add more with `RSR_ALLOWED_HOSTS` (comma-separated, spaces trimmed), read when the server starts handling requests (no rebuild needed), e.g. in `.env`:
+
+```
+RSR_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net
+```
+
+An empty or unlisted `Host` gets `403 {"error":"Host not allowed."}` and nothing runs; a request with no `Host` line at all gets Node's own `400` before the app runs (the pin allows either). `X-Forwarded-Host` is ignored. Which `Host` `tailscale serve` passes through is UNVERIFIED (pin 17): if the phone gets that 403, add the `ts.net` name above and restart.

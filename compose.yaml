@@ -1,0 +1,14 @@
+# Red Social Room (A1). Reachable only from this computer (127.0.0.1); `tailscale serve` publishes it to
+# the tailnet over HTTPS. Keys come from .env (mode 600) or the Settings page; both stay on this machine.
+services:
+  app:
+    build: .
+    image: red-social-room:a1
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      RSR_DATA_DIR: /data
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./data:/data

@@ -1,0 +1,8 @@
+{
+  "_comment": "Founder-decision switches for A1. Defaults per Amendment 1 section 4 (line 272) and the Surface room note of 2026-10-07 ~10:59 PM ET (pending amendment). Change a value here, not code. Unknown or not-yet-built values stop the app at startup (fail closed).",
+  "promptCheck": { "method": "name_list", "onFailure": "block", "override": "none" },
+  "xaiRejectionCost": "spike_narrow_422",
+  "xaiDataRetention": "default_30_days",
+  "xaiQuality": "measured_defaults",
+  "finalResolution": "1k_upscale"
+}
