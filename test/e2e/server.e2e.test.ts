@@ -129,6 +129,22 @@ before(async () => {
         return res.end(JSON.stringify({ name: "models/gemini-3.1-flash-image", version: "3.0", displayName: "Nano Banana 2" }));
       }
       if (req.url === "/v1beta/interactions" && req.method === "POST") {
+        if (body.includes("gemini-3.1-flash-lite")) {
+          // A5: the caption call. "captions-badjson" rides in the notes and makes the reply unreadable.
+          if (body.includes("captions-badjson")) {
+            return res.end(JSON.stringify({ id: "int-cap-bad", status: "completed", model: "gemini-3.1-flash-lite", steps: [{ type: "model_output", content: [{ type: "text", text: "Sorry, here are your captions (not JSON)." }] }], usage: { total_input_tokens: 100, total_output_tokens: 50, total_thought_tokens: 0 } }));
+          }
+          const capPayload = {
+            platforms: {
+              instagram: { captions: ["Snow on the harbor — the winter drop is here.", "One red cabin, one big drop day."], hashtags: ["ventures", "winterdrop"], alt_text: "A red cabin in the snow at dusk." },
+              x: { captions: ["X".repeat(350), "Short and sharp."], hashtags: ["drop"], alt_text: "A red cabin in the snow." },
+              linkedin: { captions: ["A note on shipping through winter.", "What we built this week, in one post."], hashtags: ["ventures"], alt_text: "A red cabin in the snow." },
+              facebook: { captions: ["Winter drop, live now.", "From the cabin to your feed."], hashtags: ["winter"], alt_text: "A red cabin in the snow." },
+            },
+            tags: ["winterdrop", "cabin"],
+          };
+          return res.end(JSON.stringify({ id: "int-cap-e2e", status: "completed", model: "gemini-3.1-flash-lite", steps: [{ type: "model_output", content: [{ type: "text", text: JSON.stringify(capPayload) }] }], usage: { total_input_tokens: 4096, total_output_tokens: 800, total_thought_tokens: 0 } }));
+        }
         if (body.includes("google-503")) { res.statusCode = 503; return res.end("oops"); }
         if (body.includes("google-refuse")) {
           return res.end(JSON.stringify({ id: "int-e2e-refuse", status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: "I can't draw that." }] }], usage: { total_input_tokens: 12, total_output_tokens: 7, total_thought_tokens: 0 } }));
@@ -853,6 +869,76 @@ test("A4 acceptance over HTTP: design a post, save it, reopen it, change only th
   const badUpd = await post("/api/posts/update", { postId, assetId: "f".repeat(64), recipe: recipe1 });
   assert.equal(badUpd.status, 400);
   assert.match((JSON.parse(await record("POST /api/posts/update (missing render)", badUpd)) as { error: string }).error, /not in the store/);
+});
+
+test("A5 acceptance over HTTP: one click gives captions for 4 platforms - within limits or flagged red - then save, tags and search", async () => {
+  const g = JSON.parse(await record("POST /api/generate (A5)", await post("/api/generate", { prompt: "a red cabin in the snow", ratio: "4:5" }))) as { status: string; generationId: string };
+  assert.equal(g.status, "ok", JSON.stringify(g));
+  const saved = JSON.parse(await record("POST /api/library (A5)", await post("/api/library", { generationId: g.generationId }))) as { id: number };
+  const postId = saved.id;
+  const bv = await post("/api/settings/brandvoice", { text: "We build ventures. Short sentences, real numbers." });
+  assert.equal(bv.status, 200);
+  await record("POST /api/settings/brandvoice", bv);
+
+  const capCallsBefore = mockSeen.filter((m) => m.path === "/v1beta/interactions" && m.body.includes("gemini-3.1-flash-lite")).length;
+  const res = await post("/api/captions", { postId, platforms: ["instagram", "x", "linkedin", "facebook"], tone: "mad-confident", notes: "mention the winter drop" });
+  assert.equal(res.status, 200);
+  const r = JSON.parse(await record("POST /api/captions (4 platforms)", res)) as {
+    kind: string; message: string | null; platforms: Record<string, { captions: string[]; hashtags: string[]; altText: string; limit: number; overLimit: boolean }>;
+    tags: string[]; cost: { micros: number | null; source: string } | null;
+  };
+  assert.equal(r.kind, "ok", JSON.stringify(r));
+  assert.equal(Object.keys(r.platforms).length, 4, "captions for 4 platforms");
+  assert.equal(r.platforms.x.overLimit, true, "the 350-char X caption is flagged red, not cut");
+  assert.equal(r.platforms.x.captions[0].length, 350);
+  assert.equal(r.platforms.instagram.overLimit, false);
+  assert.equal(r.platforms.instagram.limit, 2200);
+  assert.deepEqual(r.tags, ["winterdrop", "cabin"]);
+  assert.equal(r.cost?.micros, 2224, "settled from usage tokens (4096 in x $0.25/M + 800 out x $1.50/M)");
+  assert.equal(r.cost?.source, "estimated_tokens");
+  const calls = mockSeen.filter((m) => m.path === "/v1beta/interactions" && m.body.includes("gemini-3.1-flash-lite"));
+  assert.equal(calls.length, capCallsBefore + 1, "exactly one caption call");
+  const sent = JSON.parse(calls.at(-1)!.body) as { model: string; store: boolean; response_format: { type: string; mime_type: string; schema: { properties: { platforms: { required: string[] } } } }; input: Array<{ type: string; text?: string }> };
+  assert.equal(sent.model, "gemini-3.1-flash-lite");
+  assert.equal(sent.store, false);
+  assert.equal(sent.response_format.mime_type, "application/json");
+  assert.deepEqual(sent.response_format.schema.properties.platforms.required, ["instagram", "x", "linkedin", "facebook"]);
+  assert.match(sent.input[0].text ?? "", /mention the winter drop/);
+  assert.match(sent.input[0].text ?? "", /We build ventures\. Short sentences, real numbers\./);
+
+  const save = await post("/api/captions/save", { postId, platform: "instagram", text: "Harbor lights and snow — the winter drop is here.", hashtags: "ventures winterdrop", altText: "A red cabin in the snow at dusk." });
+  assert.equal(save.status, 200);
+  await record("POST /api/captions/save", save);
+  const page = await record(`GET /captions/${postId}`, await fetch(`${base}/captions/${postId}`));
+  assert.match(page, /Harbor lights and snow/, "the saved caption is on the page");
+  assert.match(page, /Instagram/);
+
+  const tagsRes = await post("/api/tags", { postId, tags: ["winterdrop", "#cabin"] });
+  assert.equal(tagsRes.status, 200);
+  const tags = JSON.parse(await record("POST /api/tags", tagsRes)) as { ok: boolean; tags: Array<{ name: string }> };
+  assert.deepEqual(tags.tags.map((t) => t.name), ["cabin", "winterdrop"]);
+  const byTag = await record("GET /library?q=winterdrop", await fetch(`${base}/library?q=winterdrop`));
+  assert.match(byTag, /red cabin in the snow/, "the tag finds the post");
+  const byCaption = await record("GET /library?q=harbor", await fetch(`${base}/library?q=harbor`));
+  assert.match(byCaption, /red cabin in the snow/, "a caption word finds the post");
+  const none = await record("GET /library?q=zebra", await fetch(`${base}/library?q=zebra`));
+  assert.doesNotMatch(none, /red cabin in the snow/);
+});
+
+test("A5 over HTTP: an unreadable caption reply is reported, still billed, and never retried automatically", async () => {
+  const g = JSON.parse(await record("POST /api/generate (A5 badjson)", await post("/api/generate", { prompt: "a quiet library at night", ratio: "1:1" }))) as { status: string; generationId: string };
+  assert.equal(g.status, "ok");
+  const saved = JSON.parse(await record("POST /api/library (A5 badjson)", await post("/api/library", { generationId: g.generationId }))) as { id: number };
+  const before = mockSeen.filter((m) => m.path === "/v1beta/interactions" && m.body.includes("gemini-3.1-flash-lite")).length;
+  const res = await post("/api/captions", { postId: saved.id, platforms: ["instagram"], tone: "casual", notes: "captions-badjson" });
+  assert.equal(res.status, 200);
+  const r = JSON.parse(await record("POST /api/captions (unreadable)", res)) as { kind: string; code: string; message: string; cost: { micros: number | null; source: string } | null };
+  assert.equal(r.kind, "error");
+  assert.equal(r.code, "unreadable");
+  assert.match(r.message, /billed/);
+  assert.equal(r.cost?.micros, 100, "the unreadable reply still settles what it used (100 in x $0.25/M + 50 out x $1.50/M)");
+  const after = mockSeen.filter((m) => m.path === "/v1beta/interactions" && m.body.includes("gemini-3.1-flash-lite")).length;
+  assert.equal(after, before + 1, "exactly one call - no automatic retry");
 });
 
 test("no response body or header, and no built browser file, contains any key (full, base64, or 12-char fragment)", async () => {

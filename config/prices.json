@@ -19,6 +19,9 @@
       "read_on": "2026-10-09" },
     { "provider": "google", "model": "gemini-3-pro-image", "kind": "edit", "resolution": "1k", "quality": null, "usd": 0.25,
       "source": "A3: mirrors the Pro generate row (cap-safe); the edit settles from token usage (image output about $0.1344 at 1120 tokens x $120/M plus input/text/thinking headroom)",
-      "read_on": "2026-10-09" }
+      "read_on": "2026-10-09" },
+    { "provider": "google", "model": "gemini-3.1-flash-lite", "kind": "caption", "resolution": "text", "quality": null, "usd": 0.005,
+      "source": "A5: Gemini 3.1 Flash-Lite paid tier, $0.25 input / $1.50 output per 1M tokens (RESEARCH-models.md:124; https://ai.google.dev/gemini-api/docs/pricing, model list read 2026-10-10). The reservation covers about 4,096 input + 1,500 output/thinking tokens (~$0.0033) with headroom; the app always settles from API usage tokens (item 8)",
+      "read_on": "2026-10-10" }
   ]
 }

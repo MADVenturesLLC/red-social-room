@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "_comment": "Caption platforms and hard limits, TECH-PLAN-v1.md section 6 (read 2026-10-03). TikTok's number is third-party only (RESEARCH-models.md:154). A6 sizing presets may join here later.",
+  "platforms": [
+    {
+      "id": "instagram",
+      "label": "Instagram",
+      "captionLimit": 2200,
+      "visibleBeforeMore": 125,
+      "verified": true
+    },
+    {
+      "id": "x",
+      "label": "X",
+      "captionLimit": 280,
+      "visibleBeforeMore": null,
+      "verified": true
+    },
+    {
+      "id": "linkedin",
+      "label": "LinkedIn",
+      "captionLimit": 3000,
+      "visibleBeforeMore": 140,
+      "verified": true
+    },
+    {
+      "id": "facebook",
+      "label": "Facebook",
+      "captionLimit": 63206,
+      "visibleBeforeMore": 80,
+      "verified": true
+    },
+    {
+      "id": "tiktok",
+      "label": "TikTok",
+      "captionLimit": 4000,
+      "visibleBeforeMore": 95,
+      "verified": false
+    },
+    {
+      "id": "pinterest",
+      "label": "Pinterest",
+      "captionLimit": 800,
+      "visibleBeforeMore": null,
+      "verified": true,
+      "_note": "description field; the title (100) is separate and out of scope"
+    },
+    {
+      "id": "youtube",
+      "label": "YouTube",
+      "captionLimit": 5000,
+      "visibleBeforeMore": null,
+      "verified": true,
+      "_note": "description field; the title (100) is separate and out of scope"
+    }
+  ]
+}

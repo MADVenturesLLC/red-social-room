@@ -19,7 +19,7 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
         {posts.map((p) => (
           <figure key={p.id} className="card" style={{ margin: 0 }} data-post-id={p.id}>
             <a href={`/api/assets/${p.asset_id}`}><img src={`/api/assets/${p.asset_id}`} alt={p.prompt} loading="lazy" width={p.width ?? undefined} height={p.height ?? undefined} /></a>
-            <figcaption className="muted">{p.prompt}{p.notes ? ` — ${p.notes}` : ""}<br />{p.model} · {p.created_at.slice(0, 10)} · <a href={`/design/${p.id}`}>{p.designed ? "Edit design" : "Design"}</a></figcaption>
+            <figcaption className="muted">{p.prompt}{p.notes ? ` — ${p.notes}` : ""}<br />{p.model} · {p.created_at.slice(0, 10)} · <a href={`/design/${p.id}`}>{p.designed ? "Edit design" : "Design"}</a> · <a href={`/captions/${p.id}`}>Captions</a></figcaption>
           </figure>
         ))}
       </div>

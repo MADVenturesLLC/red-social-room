@@ -1,6 +1,6 @@
 # MADVentures Red Social Room
 
-Act 0 spike (see `spike-results/REPORT.md`), the A1 app, the A2 additions, the A3 edits/lineage additions and the A4 editor (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
+Act 0 spike (see `spike-results/REPORT.md`), the A1 app, the A2 additions, the A3 edits/lineage additions, the A4 editor and the A5 captions (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
 
 ## Requirements
 
@@ -94,6 +94,16 @@ A4 (TECH-PLAN-v1.md :80, :96-97, :211) is the canvas editor - crop, rotate, four
 - **Brand kit**: upload PNG/JPEG/WebP/SVG logos (up to 50, raster to the usual F14 limits, SVG to 1 MB). SVG is allowed *only* here - a logo is drawn on your canvas and never sent to a model. SVGs carrying scripts, event handlers, `<foreignObject>` or `javascript:` links are refused with the reason, and stored SVGs are served under `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` (`/api/assets/`, so opening the URL directly runs nothing). Removing a logo takes it out of the kit; the file stays in the content-addressed store.
 - **Reopen and change one thing**: the acceptance path - add a logo and headline, crop, adjust warmth, save, reopen, change the headline without redoing the rest - is covered over HTTP (the crop, the slider and the logo all stay).
 - The flatten step caps the output's longest side at 2,048 px (`FLATTEN_MAX_SIDE`), so even an 8,000 px upload never makes a giant PNG. Mask painting and the local ComfyUI creator still wait on A0b.
+
+### A5: captions
+
+A5 (TECH-PLAN-v1.md :214-216, section 6) writes captions from the final image with **no image model involved**:
+
+- **One click, four platforms**: every Library image gets a **Captions** link (`/captions/<post>`). Tick platforms (Instagram, X, LinkedIn, Facebook, TikTok, Pinterest, YouTube), pick a tone, add notes — one call returns **two caption options, hashtags and alt text per platform**, with live counters against each platform's real limit (`config/platforms.json`, section 6). **Anything over its limit is flagged red, never silently cut**; the chosen option is edited inline and saved per platform.
+- **Model**: Gemini 3.1 Flash-Lite (paid tier, $0.25/$1.50 per 1M tokens) on the same Google key, the same `/v1beta/interactions` endpoint, single-turn, `store: false`, with structured JSON output (`response_format: {type:"text", mime_type:"application/json", schema}`). Cost settles from the API's token usage like every Google call; the reservation is $0.005 and the cap check runs per attempt before anything is sent. A caption call costs well under a cent.
+- **Tones** (`config/tones.json`): MAD Ventures confident / casual / educational / playful. **Brand voice**: write it once on the captions page; it rides with every call.
+- **Suggested tags**: come back with the captions; only the ones you tick are added. Captions and tags are searchable in the Library (the FTS index covers prompt, notes, model, captions and tags; older databases rebuild automatically at start).
+- **Failure behavior**: the same real-person check runs on the free text before anything is sent (a block sends nothing, records no money); an unreadable reply is reported plainly, still billed, and never retried automatically (a chosen default — press the button again for a new call); rate limits follow the same bounded rule as the image calls.
 
 ### Run it locally (no Docker)
 

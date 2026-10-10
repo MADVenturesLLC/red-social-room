@@ -47,8 +47,8 @@ export function monthTotals(db: DB, monthNY = currentMonthNY()): MonthTotals {
 }
 
 export interface ReserveInput {
-  provider: "xai" | "google"; model: string; kind: "generate" | "edit" | "prompt_check"; resolution: string; quality: string | null;
-  generationId: string; attempt: number; estimateMicros: number; estimateSource: string;
+  provider: "xai" | "google"; model: string; kind: "generate" | "edit" | "outpaint" | "caption" | "adjustment" | "prompt_check"; resolution: string; quality: string | null;
+  generationId: string | null; attempt: number; estimateMicros: number; estimateSource: string;
   now?: Date; // test seam for the month boundary
 }
 

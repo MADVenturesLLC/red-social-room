@@ -12,6 +12,21 @@ import a1LiveSmokeSeed from "./seed/a1-live-smoke.json" with { type: "json" };
 
 export type DB = DatabaseSync;
 
+/** A5: the FTS index over prompt, notes, model, captions and tags (T:77/T:103 "captions and tags join when
+ *  they exist"). Caption/tag text is denormalized onto posts on every save, so the same triggers keep it
+ *  in sync. Extracted so the migration can rebuild an older four-column index. */
+const POSTS_FTS = `CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(prompt, notes, model, caption_text, tag_text, content='posts', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
+  INSERT INTO posts_fts(rowid, prompt, notes, model, caption_text, tag_text) VALUES (new.id, new.prompt, new.notes, new.model, new.caption_text, new.tag_text);
+END;
+CREATE TRIGGER IF NOT EXISTS posts_ad AFTER DELETE ON posts BEGIN
+  INSERT INTO posts_fts(posts_fts, rowid, prompt, notes, model, caption_text, tag_text) VALUES ('delete', old.id, old.prompt, old.notes, old.model, old.caption_text, old.tag_text);
+END;
+CREATE TRIGGER IF NOT EXISTS posts_au AFTER UPDATE ON posts BEGIN
+  INSERT INTO posts_fts(posts_fts, rowid, prompt, notes, model, caption_text, tag_text) VALUES ('delete', old.id, old.prompt, old.notes, old.model, old.caption_text, old.tag_text);
+  INSERT INTO posts_fts(rowid, prompt, notes, model, caption_text, tag_text) VALUES (new.id, new.prompt, new.notes, new.model, new.caption_text, new.tag_text);
+END;`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -81,20 +96,37 @@ CREATE TABLE IF NOT EXISTS posts (
   model TEXT NOT NULL,
   notes TEXT NOT NULL DEFAULT '',
   recipe TEXT,                                           -- A4: the editor recipe (JSON) saved beside the flattened render
-  source_asset_id TEXT REFERENCES assets(id)             -- A4: the untouched original the recipe renders from
+  source_asset_id TEXT REFERENCES assets(id),            -- A4: the untouched original the recipe renders from
+  caption_text TEXT NOT NULL DEFAULT '',                 -- A5: denormalized for the FTS index (captions table below)
+  tag_text TEXT NOT NULL DEFAULT ''                      -- A5: denormalized for the FTS index (tags below)
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(prompt, notes, model, content='posts', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
-CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
-  INSERT INTO posts_fts(rowid, prompt, notes, model) VALUES (new.id, new.prompt, new.notes, new.model);
-END;
-CREATE TRIGGER IF NOT EXISTS posts_ad AFTER DELETE ON posts BEGIN
-  INSERT INTO posts_fts(posts_fts, rowid, prompt, notes, model) VALUES ('delete', old.id, old.prompt, old.notes, old.model);
-END;
-CREATE TRIGGER IF NOT EXISTS posts_au AFTER UPDATE ON posts BEGIN
-  INSERT INTO posts_fts(posts_fts, rowid, prompt, notes, model) VALUES ('delete', old.id, old.prompt, old.notes, old.model);
-  INSERT INTO posts_fts(rowid, prompt, notes, model) VALUES (new.id, new.prompt, new.notes, new.model);
-END;
+${POSTS_FTS}
+
+-- A5: captions (T:78/T:99): one row per platform per post; UNIQUE(post, platform) so saving replaces.
+CREATE TABLE IF NOT EXISTS captions (
+  id INTEGER PRIMARY KEY,
+  post_id INTEGER NOT NULL REFERENCES posts(id),
+  platform TEXT NOT NULL,
+  text TEXT NOT NULL,
+  hashtags TEXT NOT NULL DEFAULT '',
+  alt_text TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(post_id, platform)
+);
+
+-- A5: tags (T:78/T:103): suggested by the caption model, added only when the user ticks them.
+CREATE TABLE IF NOT EXISTS tags (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS post_tags (
+  post_id INTEGER NOT NULL REFERENCES posts(id),
+  tag_id INTEGER NOT NULL REFERENCES tags(id),
+  PRIMARY KEY (post_id, tag_id)
+);
 
 -- A4: the Brand kit (T:96). Logos are ordinary assets (png/jpeg/webp/svg); this table is the kit's list.
 CREATE TABLE IF NOT EXISTS brand_kit (
@@ -227,6 +259,7 @@ export function openDb(path: string, opts: { spikeLedgerPath?: string | null; se
   db.exec(SCHEMA);
   migrateA3(db);
   migrateA4(db);
+  migrateA5(db);
   const spike = opts.spikeLedgerPath === undefined ? SPIKE_LEDGER_PATH : opts.spikeLedgerPath;
   importLedgerOnce(db, spike, opts.seeds ?? (spike ? LEDGER_SEEDS : []));
   return db;
@@ -260,6 +293,20 @@ function migrateA4(db: DB): void {
   const cols = new Set((db.prepare("PRAGMA table_info(posts)").all() as Array<{ name: string }>).map((c) => c.name));
   if (!cols.has("recipe")) db.exec("ALTER TABLE posts ADD COLUMN recipe TEXT");
   if (!cols.has("source_asset_id")) db.exec("ALTER TABLE posts ADD COLUMN source_asset_id TEXT REFERENCES assets(id)");
+}
+
+/** A5: the posts columns the FTS index reads, and a rebuild of an older four-column index. The captions,
+ *  tags and post_tags tables come from SCHEMA (all new, so they always exist). */
+function migrateA5(db: DB): void {
+  const cols = new Set((db.prepare("PRAGMA table_info(posts)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!cols.has("caption_text")) db.exec("ALTER TABLE posts ADD COLUMN caption_text TEXT NOT NULL DEFAULT ''");
+  if (!cols.has("tag_text")) db.exec("ALTER TABLE posts ADD COLUMN tag_text TEXT NOT NULL DEFAULT ''");
+  const fts = (db.prepare("PRAGMA table_info(posts_fts)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (fts.length && !fts.includes("caption_text")) {
+    db.exec("DROP TRIGGER IF EXISTS posts_ai; DROP TRIGGER IF EXISTS posts_ad; DROP TRIGGER IF EXISTS posts_au; DROP TABLE IF EXISTS posts_fts;");
+    db.exec(POSTS_FTS);
+    db.exec("INSERT INTO posts_fts(posts_fts) VALUES ('rebuild')");
+  }
 }
 
 /** Run fn inside BEGIN IMMEDIATE ... COMMIT (rolled back on throw). */
