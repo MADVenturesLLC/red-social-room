@@ -1,6 +1,6 @@
 # MADVentures Red Social Room
 
-Act 0 spike (see `spike-results/REPORT.md`) and the A1 app (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
+Act 0 spike (see `spike-results/REPORT.md`), the A1 app and the A2 additions (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
 
 ## Requirements
 
@@ -15,8 +15,9 @@ Act 0 spike (see `spike-results/REPORT.md`) and the A1 app (below). Plan: `docs/
 npm ci                 # dev deps for the typecheck
 npm run typecheck      # tsc -p tsconfig.json (strict, noEmit)
 npm test               # node --test "spike/test/*.test.ts" "test/*.test.ts": the spike tests (spend guard, ledger validation, step outputs,
-                       # scan rules, Gemini cost rule, paid scripts against a fake transport) plus the A1 app unit tests (fake xAI,
-                       # dummy keys, nothing sent). npm run test:e2e builds and starts the app against a local fake xAI.
+                       # scan rules, Gemini cost rule, paid scripts against a fake transport) plus the A1/A2 app unit tests (fake xAI
+                       # and Google, the real-socket mock provider server under test/mock/, dummy keys, nothing sent).
+                       # npm run test:e2e builds and starts the app against local fakes for xAI and Google.
 npm run check-secrets  # leak scan: pattern rules always; exact key match too if the keys are in env (prints counts only)
 npm run ledger         # spend ledger view (shared $50/month cap, $3 spike cap)
 ```
@@ -55,7 +56,7 @@ TECH-PLAN-v1.md section 9 A1, as amended by Amendment 1 section 4: prompt -> Gro
 
 - Code: `src/server/` (DB, ledger, key store, prompt check, xAI adapter), `src/app/` (pages and API routes). Reuses `spike/lib/xai-shape.ts` (cost rule), `spike/lib/ledger.ts` (micro-USD rounding, New York month), `spike/lib/image.ts`.
 - Config (no code change needed): `config/switches.json` (pending Founder decisions P1/P4/P5/P6/P7; a value A1 doesn't build stops startup), `config/prices.json` (pre-call estimates), `config/real-person-names.txt` (one name per line; an empty or missing list blocks every prompt).
-- Data (`RSR_DATA_DIR`, default `./data`, `/data` in Docker): `db/rsr.sqlite` (WAL, FTS5), `images/<aa>/<sha256>.<ext>`, `secrets/xai_api_key` (mode 600, only if saved from Settings). On first start the 10 spike rows from `spike-results/ledger.json` and the one billed A1 live smoke call (`src/server/seed/a1-live-smoke.json`, $0.04, xAI request `cb478eea-cf55-96df-bc20-38346f7f013b`) are imported into the spend ledger in one transaction, so October starts at $0.5947 counted.
+- Data (`RSR_DATA_DIR`, default `./data`, `/data` in Docker): `db/rsr.sqlite` (WAL, FTS5), `images/<aa>/<sha256>.<ext>`, `secrets/xai_api_key` and `secrets/gemini_api_key` (mode 600, only if saved from Settings). On first start the 10 spike rows from `spike-results/ledger.json` and the one billed A1 live smoke call (`src/server/seed/a1-live-smoke.json`, $0.04, xAI request `cb478eea-cf55-96df-bc20-38346f7f013b`) are imported into the spend ledger in one transaction, so October starts at $0.5947 counted.
 
 One server per data directory, on one host (A1 pin 18, line 369 of Amendment 1 at `5c773d7`). Two containers or two hosts sharing one data directory are **not supported**.
 
@@ -63,27 +64,35 @@ One server per data directory, on one host (A1 pin 18, line 369 of Amendment 1 a
 - **A data directory that is not writable** (A1 pin 19 (d), line 370 of Amendment 1 at `9a890fb`). At start, the lock cannot be taken there, so the server exits 1 with `refusing to start: The data directory is not writable: <dir> (cannot create or write <dir>/rsr.lock) ...` (never the "another server" message, and no raw SQLite text); the same applies if `db/` or `images/` is not writable. If the directory or the database stops being writable while the server runs, it keeps running, and every image request answers 500 `The data directory is not writable, so nothing was sent to the provider and nothing was charged.` before any provider call. This check covers the data directory, `db/`, the database files, `images/` and every existing `images/<xx>/` folder (an image's folder is named after its hash, which is only known once xAI has answered, so all of them are checked). Saving a key, the cap or a Library post on a data directory that is not writable answers 500 `The data directory is not writable, so nothing was saved.` Make it writable again and the next request goes through. A read-only `rsr.lock` counts as not writable: SQLite would open it read-only and report an "exclusive" lock to every process at once, so the lock makes a real write (`PRAGMA user_version`) to prove it really holds it, and refuses to start if it cannot.
 - **Interrupted and late calls.** At start, ledger rows still `reserved` from a server that stopped mid-call are listed as unresolved ("interrupted"). A call that finishes after its row left `reserved` is kept as a `late_result` event; the row stays unresolved (nothing settles automatically), and until it is reconciled the cap counts it at the larger of its estimate and the late bill, which Settings -> Unresolved shows next to the held amount.
 
+### A2: Google (Nano Banana 2), creator cards, the run queue and the reconcile screen
+
+A2 (Amendment 1 section 4) adds: **Nano Banana 2** (`gemini-3.1-flash-image`) beside Grok; **creator cards** (tick one or both, 1-4 images each) that send one prompt to every chosen card; an in-process **job queue** with static per-provider concurrency (xAI 2, Google 2, `src/server/config.ts`); a **side-by-side grid** of tiles (each with model, time, cost, ref, Save to library, Retry) fed by server-sent events; **reconcile**: Settings -> Spend lists every `unresolved` row and settles it by hand ("not charged" / "charged $x"), and you can enter the **Google console total** for the month - when it is higher than the app's estimate, one adjustment row is added so the cap counts real spend (per-call rows are never rewritten); and the **mock provider server** (`test/mock/provider.ts`) that speaks both providers over real sockets with fault injection.
+
+- Google rules: every request carries `store: false` and never a `previous_interaction_id` (D4); responses are stripped on arrival (id, status, usage token counts and the image only); a text-only 200 is a refusal ("Google returned no image" plus the provider's text verbatim); both documented error-body shapes are mapped; cost is always the token estimate (item 8) with `cost_source = estimated_tokens`; `config/prices.json` reserves $0.075 per Google call (the spike number; the spike's recorded usage prices at about $0.0685).
+- Google key: paste it in Settings (saved server-side to `data/secrets/gemini_api_key`, mode 600) or set `GEMINI_API_KEY`. The free check is `GET /v1beta/models/gemini-3.1-flash-image`.
+- One more card state: after 3 consecutive 5xx results for one provider within 10 minutes the card shows "Provider having problems" until the next success (F5); a badge on the Settings link counts the unresolved rows (F21).
+
 ### Run it locally (no Docker)
 
 ```
 export PATH=/home/box/node22/bin:$PATH   # Node >= 22.18
 npm ci
-npm run build && npm start               # http://127.0.0.1:3000 (binds 127.0.0.1 only, not the LAN); key from XAI_API_KEY or Settings
+npm run build && npm start               # http://127.0.0.1:3000 (binds 127.0.0.1 only, not the LAN); keys from XAI_API_KEY / GEMINI_API_KEY or Settings
 npm test                                 # spike + app unit tests (no network, dummy keys)
 npm run test:e2e                         # next build + next start against a local fake xAI; key-leak scan
 ```
 
-### Run it with Docker Compose + Tailscale Serve (untested on the build box: no Docker or Tailscale there)
+### Run it with Docker Compose + Tailscale Serve (verified on the build box, October 9, 2026)
 
 ```
-cp .env.example .env && chmod 600 .env   # put XAI_API_KEY=... in it, or leave it empty and use Settings
+cp .env.example .env && chmod 600 .env   # put XAI_API_KEY=... and/or GEMINI_API_KEY=... in it, or paste keys in Settings
 mkdir -p data                            # on Linux, if the container can't write it: sudo chown 1000:1000 data
 docker compose up -d --build             # listens on 127.0.0.1:3000 only
 tailscale serve --bg --https=443 http://127.0.0.1:3000
 tailscale serve status                   # shows https://<machine>.<tailnet>.ts.net/
 ```
 
-Open the `https://<machine>.<tailnet>.ts.net/` URL on the phone (signed in to the same tailnet). To stop sharing: `tailscale serve --https=443 off`. The app has no login of its own; Tailscale is the only way in. `npm start` binds 127.0.0.1, and the compose file publishes the port on 127.0.0.1 only (inside the container the app listens on 0.0.0.0, `npm run start:container` / the Dockerfile `CMD`), so neither is reachable from the LAN. Tailscale Serve proxies to 127.0.0.1, so that is enough for it.
+This runbook carried A1's acceptance on the Z890 box on October 9, 2026 (image built, container healthy on `127.0.0.1:3000`, `tailscale serve` live, and the phone test passed: make an image, save it, find it by a prompt word, no key in browser traffic). Open the `https://<machine>.<tailnet>.ts.net/` URL on the phone (signed in to the same tailnet). To stop sharing: `tailscale serve --https=443 off`. The app has no login of its own; Tailscale is the only way in. `npm start` binds 127.0.0.1, and the compose file publishes the port on 127.0.0.1 only (inside the container the app listens on 0.0.0.0, `npm run start:container` / the Dockerfile `CMD`), so neither is reachable from the LAN. Tailscale Serve proxies to 127.0.0.1, so that is enough for it.
 
 ### Allowed hosts (A1 pin 17, Amendment 1 line 368)
 

@@ -1,8 +1,8 @@
 import { getApp } from "../../server/app.ts";
 import { appStatus } from "../../server/status.ts";
-import { unresolvedRows, unresolvedHeldText, fmtUsd } from "../../server/ledger.ts";
+import { unresolvedRows, unresolvedHeldText, fmtUsd, googleConsoleState } from "../../server/ledger.ts";
 import { freeBytes } from "../../server/store.ts";
-import { KeyForm, CheckButton, CapForm } from "../../components/SettingsClient.tsx";
+import { KeyForm, GoogleKeyForm, CheckButton, CapForm, ReconcileRow, ConsoleForm } from "../../components/SettingsClient.tsx";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +12,7 @@ export default function SettingsPage() {
   const app = getApp();
   const s = appStatus(app);
   const unresolved = unresolvedRows(app.db);
+  const gc = googleConsoleState(app.db);
   const free = freeBytes(app.imagesDir.replace(/\/images$/, ""));
   return (
     <>
@@ -27,6 +28,15 @@ export default function SettingsPage() {
         <CheckButton />
       </section>
       <section className="card">
+        <h2>Google key</h2>
+        <p data-testid="google-key-status">
+          {s.googleKey.set ? <>Set ({s.googleKey.source === "settings" ? "saved here" : "from .env"}), ending <code>{s.googleKey.last4 ?? "????"}</code>.</> : "Not set."}{" "}
+          {s.googleKey.checked ? (s.googleKey.checkOk ? `Key check passed${s.googleKey.versionListing ? ` (${s.googleKey.versionListing})` : ""}.` : (s.googleKey.checkMessage ?? "Key check failed.")) : "Not checked yet."}
+        </p>
+        <p className="muted">Stays on the server; only the last 4 characters appear here. Google returns no billed amount, so the app estimates each call from the token counts it reports; the Google console check below shows the difference.</p>
+        <GoogleKeyForm />
+      </section>
+      <section className="card">
         <h2>Spend ({s.totals.monthNY}, America/New_York month)</h2>
         <p>{s.totalsText.counted} counted of {s.totalsText.cap} cap{s.totals.heldMicros > 0 ? `, including ${s.totalsText.held} held for unchecked calls` : ""}.</p>
         <p className="muted">By provider: {Object.entries(s.totals.byProvider).map(([p, m]) => `${p} ${fmtUsd(m)}`).join(", ") || "none"}</p>
@@ -39,10 +49,16 @@ export default function SettingsPage() {
           </div>
         ) : null}
         <h3>Unresolved ({unresolved.length})</h3>
-        <p className="muted">Calls that may have been charged. Each stays held against the cap until it is checked against the provider console (marking them comes in A2).</p>
+        <p className="muted">Calls that may have been charged. Each stays held against the cap until you check it against the provider console. Not charged drops the hold; the charged amount settles the row by hand — the original numbers are never rewritten.</p>
         <table><tbody>
-          {unresolved.map((r) => <tr key={r.id}><td>{r.created_at}</td><td>{r.provider}</td><td>Ref {r.id.slice(0, 8)}</td><td>{unresolvedHeldText(r)}</td><td>HTTP {r.http_status ?? "—"}</td></tr>)}
+          {unresolved.map((r) => <tr key={r.id}><td>{r.created_at}</td><td>{r.provider}</td><td>Ref {r.id.slice(0, 8)}</td><td>{unresolvedHeldText(r)}</td><td>HTTP {r.http_status ?? "—"}</td><td><ReconcileRow id={r.id} /></td></tr>)}
         </tbody></table>
+        <h3>Google console total ({gc.monthNY})</h3>
+        <p className="muted" data-testid="google-console">
+          App estimate for Google this month: {fmtUsd(gc.estimateMicros)}{gc.appliedMicros > 0 ? ` (plus ${fmtUsd(gc.appliedMicros)} adjustment already applied)` : ""}.{" "}
+          {gc.consoleMicros === null ? `Enter Google console total for ${gc.monthNY} from Google Cloud Billing to check it.` : `Console total on record: ${fmtUsd(gc.consoleMicros)}; difference ${fmtUsd(gc.differenceMicros ?? 0)}.`}
+        </p>
+        <ConsoleForm monthNY={gc.monthNY} />
       </section>
       <section className="card">
         <h2>Storage</h2>
@@ -52,6 +68,7 @@ export default function SettingsPage() {
         <h2>About</h2>
         <p className="muted">{app.switches.xaiDataRetention === "zdr" ? "xAI zero data retention is on (set in the xAI console); the app logs xAI's x-zero-data-retention header on each call." : "xAI keeps requests 30 days for abuse review."}</p>
         <p className="muted">Real-person check: name list (config/real-person-names.txt); {app.switches.promptCheck.onFailure === "block" ? "if it can't run, nothing is sent" : "if it can't run, prompts are sent and labeled"}.</p>
+        <p className="muted">Google calls are sent with store:false; the app never keeps the raw response, only the image and the token counts.</p>
       </section>
     </>
   );

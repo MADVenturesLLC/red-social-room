@@ -1,10 +1,11 @@
-// Server-side API key handling (TECH-PLAN-v1.md:79; Amendment 1 F7 / G5).
-// - Sources: a key saved from the Settings page (data/secrets/xai_api_key, mode 600) wins over XAI_API_KEY
-//   from the environment (.env read by Docker).
+// Server-side API key handling (TECH-PLAN-v1.md:79; Amendment 1 F7 / G5; A2 adds the Google store).
+// - Every provider has its own store: xai -> data/secrets/xai_api_key + XAI_API_KEY; google ->
+//   data/secrets/gemini_api_key + GEMINI_API_KEY. A key saved from the Settings page (mode 600) wins over
+//   the provider's environment value (.env read by Docker).
 // - The raw value leaves this module only inside a request header (authHeader) and is never returned,
 //   logged, or rendered. Settings shows only the last 4 characters.
-// - scrub() removes every known key value (and anything shaped like an xAI key) from text before it is
-//   logged or shown.
+// - scrub() removes every known key value (both providers' saved/env values) and anything shaped like an
+//   xAI or Google key from text before it is logged or shown.
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
@@ -17,21 +18,33 @@ export class KeyRejectedInput extends Error {
 
 const KEY_SHAPE = /^[A-Za-z0-9._-]{20,256}$/;
 const XAI_KEY_PATTERN = /xai-[A-Za-z0-9]{16,}/g;
+/** Google key shapes from the scan rules: classic API keys ("AIza" + 35) and newer auth keys ("AQ." + 20+). */
+const GOOGLE_KEY_PATTERN = /AIza[0-9A-Za-z_-]{35}|AQ\.[A-Za-z0-9_-]{20,}/g;
 /** Any bearer credential (e.g. an echoed Authorization header), whatever its format. */
 const BEARER_PATTERN = /\b(Bearer)\s+[A-Za-z0-9._~+\/=-]+/gi;
 
+export type KeyProvider = "xai" | "google";
+
+const FILES: Readonly<Record<KeyProvider, string>> = Object.freeze({ xai: "xai_api_key", google: "gemini_api_key" });
+const PRIMARY_ENV: Readonly<Record<KeyProvider, string>> = Object.freeze({ xai: "XAI_API_KEY", google: "GEMINI_API_KEY" });
+const OTHER_ENV: Readonly<Record<KeyProvider, string[]>> = Object.freeze({ xai: ["GEMINI_API_KEY"], google: ["XAI_API_KEY"] });
+
 export class KeyStore {
   readonly #file: string;
-  readonly #envXai: string | null;
+  readonly #provider: KeyProvider;
+  readonly #envPrimary: string | null;
   readonly #envOthers: string[];
 
-  constructor(opts: { secretsDir: string; env?: NodeJS.ProcessEnv }) {
+  constructor(opts: { secretsDir: string; env?: NodeJS.ProcessEnv; provider?: KeyProvider }) {
     const env = opts.env ?? process.env;
-    this.#file = join(opts.secretsDir, "xai_api_key");
-    const x = env.XAI_API_KEY?.trim();
-    this.#envXai = x ? x : null;
-    this.#envOthers = [env.GEMINI_API_KEY?.trim()].filter((v): v is string => !!v);
+    this.#provider = opts.provider ?? "xai";
+    this.#file = join(opts.secretsDir, FILES[this.#provider]);
+    const p = env[PRIMARY_ENV[this.#provider]]?.trim();
+    this.#envPrimary = p ? p : null;
+    this.#envOthers = OTHER_ENV[this.#provider].map((n) => env[n]?.trim()).filter((v): v is string => !!v);
   }
+
+  get provider(): KeyProvider { return this.#provider; }
 
   #saved(): string | null {
     if (!existsSync(this.#file)) return null;
@@ -42,7 +55,7 @@ export class KeyStore {
   #current(): { value: string; source: "settings" | "env" } | null {
     const s = this.#saved();
     if (s) return { value: s, source: "settings" };
-    if (this.#envXai) return { value: this.#envXai, source: "env" };
+    if (this.#envPrimary) return { value: this.#envPrimary, source: "env" };
     return null;
   }
 
@@ -62,7 +75,7 @@ export class KeyStore {
   authHeader(): Record<string, string> {
     const c = this.#current();
     if (!c) throw new Error("No xAI key is set");
-    return { Authorization: `Bearer ${c.value}` };
+    return this.#provider === "google" ? { "x-goog-api-key": c.value } : { Authorization: `Bearer ${c.value}` };
   }
 
   /** Save a key from the Settings form: shape check, temp file (mode 600) -> fsync -> rename -> dir fsync. */
@@ -84,8 +97,8 @@ export class KeyStore {
 
   scrub(s: string): string {
     let out = s;
-    const vals = [this.#saved(), this.#envXai, ...this.#envOthers].filter((v): v is string => !!v && v.length >= 8);
+    const vals = [this.#saved(), this.#envPrimary, ...this.#envOthers].filter((v): v is string => !!v && v.length >= 8);
     for (const v of vals) if (out.includes(v)) out = out.split(v).join("[REDACTED]");
-    return out.replace(XAI_KEY_PATTERN, "[REDACTED]").replace(BEARER_PATTERN, "$1 [REDACTED]");
+    return out.replace(XAI_KEY_PATTERN, "[REDACTED]").replace(GOOGLE_KEY_PATTERN, "[REDACTED]").replace(BEARER_PATTERN, "$1 [REDACTED]");
   }
 }

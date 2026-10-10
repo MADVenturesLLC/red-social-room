@@ -1,9 +1,10 @@
-# Red Social Room (A1). Reachable only from this computer (127.0.0.1); `tailscale serve` publishes it to
-# the tailnet over HTTPS. Keys come from .env (mode 600) or the Settings page; both stay on this machine.
+# Red Social Room (A1 + A2). Reachable only from this computer (127.0.0.1); `tailscale serve` publishes it
+# to the tailnet over HTTPS. Keys (XAI_API_KEY, GEMINI_API_KEY) come from .env (mode 600) or the Settings
+# page; all stay on this machine.
 services:
   app:
     build: .
-    image: red-social-room:a1
+    image: red-social-room:a2
     restart: unless-stopped
     env_file: .env
     environment:
