@@ -515,6 +515,7 @@ test("A2 over HTTP: one prompt to both creators shows both results; the Google c
   const create = await record("GET / (A2 creator cards)", await fetch(`${base}/`));
   assert.match(create, /Grok Imagine 2\.0/);
   assert.match(create, /Nano Banana 2/);
+  assert.match(create, /Nano Banana Pro/);
   const started = JSON.parse(await record("POST /api/run (both creators)", await post("/api/run", { prompt: "a hot air balloon over vineyards at sunrise", ratio: "4:5", creators: [{ id: "xai", n: 1 }, { id: "google", n: 1 }] }))) as { runId: string; blocked: boolean };
   assert.equal(started.blocked, false);
   const v = await runToCompletion(started.runId);

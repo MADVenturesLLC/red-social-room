@@ -13,21 +13,23 @@ import { checkWritable, DataDirNotWritable, NOT_WRITABLE_MESSAGE } from "./writa
 import { executeGeneration, modelFor, recordGeneration, type AppDeps, type GenerateView, type ProviderId } from "./execute.ts";
 import { generationCostText } from "./ledger.ts";
 import { MODEL as XAI_MODEL } from "./xai/adapter.ts";
-import { MODEL as GOOGLE_MODEL } from "./google/adapter.ts";
+import { MODEL as GOOGLE_MODEL, PRO_MODEL as GOOGLE_PRO_MODEL } from "./google/adapter.ts";
 
 /** The creator cards: one per provider (Amendment 1 section 4 item 27). */
-export interface CreatorDef { id: ProviderId; name: string; model: string; blurb: string }
+export interface CreatorDef { id: string; provider: ProviderId; name: string; model: string; blurb: string }
 export const CREATORS: readonly CreatorDef[] = Object.freeze([
-  { id: "xai", name: "Grok Imagine 2.0", model: XAI_MODEL, blurb: "xAI" },
-  { id: "google", name: "Nano Banana 2", model: GOOGLE_MODEL, blurb: "Google" },
+  { id: "xai", provider: "xai", name: "Grok Imagine 2.0", model: XAI_MODEL, blurb: "xAI" },
+  { id: "google", provider: "google", name: "Nano Banana 2", model: GOOGLE_MODEL, blurb: "Google" },
+  // FD:11: Nano Banana Pro is its own card, off by default ("Nano Banana 2 is the default"), same Google key and pool.
+  { id: "google-pro", provider: "google", name: "Nano Banana Pro", model: GOOGLE_PRO_MODEL, blurb: "Google" },
 ]);
 
 export const MAX_IMAGES_PER_CREATOR = 4;
 
-export interface RunJobRow { id: string; run_id: string; creator_id: ProviderId; provider: ProviderId; model: string; generation_id: string; prompt: string; ratio: string; status: string; label: string | null; created_at: string; started_at: string | null; finished_at: string | null; error: string | null }
+export interface RunJobRow { id: string; run_id: string; creator_id: string; provider: ProviderId; model: string; generation_id: string; prompt: string; ratio: string; status: string; label: string | null; created_at: string; started_at: string | null; finished_at: string | null; error: string | null }
 export type JobStatus = "queued" | "running" | "ok" | "refused" | "error" | "blocked" | "not_sent";
 
-export interface JobView { jobId: string; creator: ProviderId; name: string; model: string; status: JobStatus; generationId: string; view: GenerateView | null }
+export interface JobView { jobId: string; creator: string; name: string; model: string; status: JobStatus; generationId: string; view: GenerateView | null }
 export interface RunView { id: string; prompt: string; status: string; created_at: string; jobs: JobView[] }
 
 export class RunInputError extends Error {
@@ -47,7 +49,7 @@ function runnerOf(d: AppDeps): Runner {
 }
 
 /** Parse and validate the /api/run body. */
-export function parseRunInput(body: unknown): { prompt: string; ratio: string; creators: Array<{ id: ProviderId; n: number }> } {
+export function parseRunInput(body: unknown): { prompt: string; ratio: string; creators: Array<{ id: string; n: number }> } {
   const o = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
   const prompt = typeof o.prompt === "string" ? o.prompt.trim() : "";
   if (!prompt) throw new RunInputError("Type a prompt first.");
@@ -56,14 +58,15 @@ export function parseRunInput(body: unknown): { prompt: string; ratio: string; c
   if (!ratio) throw new RunInputError("Pick an aspect ratio.");
   const raw = Array.isArray(o.creators) ? o.creators : [];
   const seen = new Set<string>();
-  const creators: Array<{ id: ProviderId; n: number }> = [];
+  const creators: Array<{ id: string; n: number }> = [];
   for (const c of raw) {
     const cc = (c && typeof c === "object" ? c : {}) as { id?: unknown; n?: unknown };
-    if (cc.id !== "xai" && cc.id !== "google") throw new RunInputError(`Unknown creator: ${String(cc.id)}`);
-    if (seen.has(cc.id)) throw new RunInputError(`Creator ${cc.id} is listed twice.`);
-    seen.add(cc.id);
+    const def = typeof cc.id === "string" ? CREATORS.find((x) => x.id === cc.id) : undefined;
+    if (!def) throw new RunInputError(`Unknown creator: ${String(cc.id)}`);
+    if (seen.has(def.id)) throw new RunInputError(`Creator ${def.id} is listed twice.`);
+    seen.add(def.id);
     if (typeof cc.n !== "number" || !Number.isInteger(cc.n) || cc.n < 1 || cc.n > MAX_IMAGES_PER_CREATOR) throw new RunInputError(`Each creator makes 1-${MAX_IMAGES_PER_CREATOR} images.`);
-    creators.push({ id: cc.id, n: cc.n });
+    creators.push({ id: def.id, n: cc.n });
   }
   if (!creators.length) throw new RunInputError("Pick at least one creator.");
   return { prompt, ratio, creators };
@@ -79,27 +82,28 @@ export function startRun(d: AppDeps, input: { prompt: unknown; ratio: unknown; c
   checkWritable(d.dataDir);
   const pc = checkPrompt(prompt, d.promptMethod, d.switches.promptCheck, d.db);
   const runId = randomUUID();
-  const queued: Array<{ jobId: string; creator: ProviderId }> = [];
+  const queued: Array<{ jobId: string; provider: ProviderId }> = [];
   tx(d.db, () => {
     d.db.prepare("INSERT INTO runs (id, created_at, prompt, status) VALUES (?, ?, ?, ?)").run(runId, isoNY(), prompt, pc.allowed ? "running" : "blocked");
     const ins = d.db.prepare("INSERT INTO jobs (id, run_id, creator_id, provider, model, generation_id, prompt, ratio, status, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     for (const c of creators) {
+      const def = CREATORS.find((x) => x.id === c.id)!;
       for (let i = 0; i < c.n; i++) {
         const jobId = randomUUID();
-        ins.run(jobId, runId, c.id, c.id, modelFor(c.id), randomUUID(), prompt, ratio, pc.allowed ? "queued" : "blocked", pc.allowed ? pc.label : null, isoNY());
-        queued.push({ jobId, creator: c.id });
+        ins.run(jobId, runId, def.id, def.provider, def.model, randomUUID(), prompt, ratio, pc.allowed ? "queued" : "blocked", pc.allowed ? pc.label : null, isoNY());
+        queued.push({ jobId, provider: def.provider });
       }
     }
   });
   if (!pc.allowed) {
     const rows = d.db.prepare("SELECT * FROM jobs WHERE run_id = ? ORDER BY created_at, id").all(runId) as unknown as RunJobRow[];
     for (const j of rows) {
-      recordGeneration(d, { runId, provider: j.creator_id, model: j.model, generationId: j.generation_id, prompt, ratio, status: pc.result === "blocked" ? "blocked" : "not_sent", error_code: pc.result, error_message: pc.message });
+      recordGeneration(d, { runId, provider: j.provider, model: j.model, generationId: j.generation_id, prompt, ratio, status: pc.result === "blocked" ? "blocked" : "not_sent", error_code: pc.result, error_message: pc.message });
     }
     return { runId, blocked: true, message: pc.message, label: pc.label };
   }
   const r = runnerOf(d);
-  for (const q of queued) r.queues.get(q.creator)!.push(q.jobId);
+  for (const q of queued) r.queues.get(q.provider)!.push(q.jobId);
   pump(d, r);
   return { runId, blocked: false, message: null, label: pc.label };
 }
@@ -153,7 +157,7 @@ async function executeJob(d: AppDeps, r: Runner, jobId: string): Promise<void> {
   let status: JobStatus;
   let error: string | null = null;
   try {
-    const view = await executeGeneration(d, { runId: job.run_id, provider: job.creator_id, model: job.model, prompt: job.prompt, ratio: job.ratio, generationId: job.generation_id });
+    const view = await executeGeneration(d, { runId: job.run_id, provider: job.provider, model: job.model, prompt: job.prompt, ratio: job.ratio, generationId: job.generation_id });
     status = view.status;
     error = view.status === "error" || view.status === "refused" ? view.message : null;
   } catch (e) {
@@ -207,7 +211,7 @@ function jobViewOf(d: AppDeps, row: Record<string, unknown>): JobView {
     costText: generationCostText(d.db, String(row.generation_id)),
     ref: (row.client_request_id as string | null) ?? null,
   } : null;
-  return { jobId: String(row.id), creator: row.creator_id as ProviderId, name: creator?.name ?? String(row.creator_id), model: String(row.model), status: row.status as JobStatus, generationId: String(row.generation_id), view };
+  return { jobId: String(row.id), creator: String(row.creator_id), name: creator?.name ?? String(row.creator_id), model: String(row.model), status: row.status as JobStatus, generationId: String(row.generation_id), view };
 }
 
 /** The whole run as the UI and tests read it. */

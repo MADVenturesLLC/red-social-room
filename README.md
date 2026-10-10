@@ -70,6 +70,7 @@ A2 (Amendment 1 section 4) adds: **Nano Banana 2** (`gemini-3.1-flash-image`) be
 
 - Google rules: every request carries `store: false` and never a `previous_interaction_id` (D4); responses are stripped on arrival (id, status, usage token counts and the image only); a text-only 200 is a refusal ("Google returned no image" plus the provider's text verbatim); both documented error-body shapes are mapped; cost is always the token estimate (item 8) with `cost_source = estimated_tokens`; `config/prices.json` reserves $0.075 per Google call (the spike number; the spike's recorded usage prices at about $0.0685).
 - Google key: paste it in Settings (saved server-side to `data/secrets/gemini_api_key`, mode 600) or set `GEMINI_API_KEY`. The free check is `GET /v1beta/models/gemini-3.1-flash-image`.
+- The roster also carries **Nano Banana Pro** (`gemini-3-pro-image`) as its own card, unticked by default (FD:11). Its model id and price were confirmed against the live pricing page on 2026-10-09 ($120/1M image tokens = 1120 tokens per 1K/2K image, about $0.134); Pro calls are priced from the same token counts at Pro rates (input $2/M, text/thinking $12/M, images $120/M). Pro shares the one Google key and the one $50 cap.
 - One more card state: after 3 consecutive 5xx results for one provider within 10 minutes the card shows "Provider having problems" until the next success (F5); a badge on the Settings link counts the unresolved rows (F21).
 
 ### Run it locally (no Docker)

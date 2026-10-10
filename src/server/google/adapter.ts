@@ -12,7 +12,7 @@
 //   spike-results/gemini/ (request shape: 01-generate-3x4.json; headers incl. Api-Revision there).
 // - Raw request/response bodies are never stored or logged (G5); only parsed fields leave this file.
 //   The response is stripped on arrival (item 26): id, status, usage token counts and the image bytes only.
-import { geminiCostFromUsage } from "../../../spike/lib/prices.ts";
+import { geminiCostFromUsage, normModality } from "../../../spike/lib/prices.ts";
 import { geminiCost, isF9TextOnly, outputImages, outputText, type Interaction } from "../../../spike/lib/gemini-shape.ts";
 import type { StepCost } from "../../../spike/lib/step.ts";
 import { toMicros } from "../../../spike/lib/ledger.ts";
@@ -26,6 +26,9 @@ import type { CostInfo, AttemptLog, ErrorCode, KeyCheckCache } from "../xai/adap
 
 export const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com";
 export const MODEL = "gemini-3.1-flash-image";
+/** FD:11: Nano Banana Pro, its own roster card. Id and price confirmed against
+ *  https://ai.google.dev/gemini-api/docs/pricing on 2026-10-09 ($120/1M image tokens; 1120 tokens per 1K/2K image = about $0.134). */
+export const PRO_MODEL = "gemini-3-pro-image";
 export const MAX_RETRY_AFTER_S = 30; // F4
 export const MAX_ATTEMPTS = 3; // F4: at most 3 attempts per user action
 /** Fixed request header for the Interactions API (spike/gemini.ts; recorded in spike-results/gemini/*). */
@@ -156,9 +159,50 @@ export function invalidateKeyCheck(d: GoogleDeps): void { d.keyCheck.ok = false;
 // ---- cost (item 8: estimated from usage tokens; no billed figure exists for Google) ----
 
 /** Estimated cost of a 5xx/4xx-with-usage response from its token counts; null when unusable. */
-function usageCost(j: unknown, imageTokensRequired: boolean): { usd: number; detail: string } | null {
-  const c = geminiCostFromUsage((j as Interaction | null)?.usage, { imageTokensRequired });
+function usageCost(j: unknown, imageTokensRequired: boolean, usePro: boolean): { usd: number; detail: string } | null {
+  const c = usePro ? proCostFromUsage((j as Interaction | null)?.usage, { imageTokensRequired }) : geminiCostFromUsage((j as Interaction | null)?.usage, { imageTokensRequired });
   return "error" in c ? null : { usd: c.usd, detail: c.detail };
+}
+
+/** Pro rates (FD:11; pricing page read 2026-10-09): input $2/1M, text+thinking $12/1M, image output $120/1M.
+ *  Same fail-closed validation as spike/lib/prices.ts geminiCostFromUsage (Argus N13), different rates. */
+const PRO_RATES = Object.freeze({ inputPerMTok: 2, textThinkingOutputPerMTok: 12, imageOutputPerMTok: 120 });
+
+export function proCostFromUsage(u: unknown, opts: { imageTokensRequired: boolean }): { usd: number; detail: string } | { error: string } {
+  if (!u || typeof u !== "object" || Array.isArray(u)) return { error: "no usage block" };
+  const g = u as { total_input_tokens?: unknown; total_output_tokens?: unknown; total_thought_tokens?: unknown; output_tokens_by_modality?: unknown };
+  const isCount = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
+  const missing: string[] = [];
+  if (!isCount(g.total_input_tokens) || g.total_input_tokens === 0) missing.push("total_input_tokens");
+  if (!isCount(g.total_output_tokens) || g.total_output_tokens === 0) missing.push("total_output_tokens");
+  if (g.total_thought_tokens !== undefined && !isCount(g.total_thought_tokens)) missing.push("total_thought_tokens (not a count)");
+  const mods = g.output_tokens_by_modality;
+  if (mods !== undefined && (!Array.isArray(mods) || mods.some((m) => !m || typeof (m as { modality?: unknown }).modality !== "string" || !isCount((m as { tokens?: unknown }).tokens)))) missing.push("output_tokens_by_modality (malformed)");
+  const imgOut = Array.isArray(mods) ? mods.filter((m) => typeof (m as { modality?: unknown }).modality === "string" && normModality((m as { modality: string }).modality) === "image" && isCount((m as { tokens?: unknown }).tokens)).reduce((a, m) => a + ((m as { tokens: number }).tokens), 0) : 0;
+  if (opts.imageTokensRequired && imgOut === 0) missing.push("output_tokens_by_modality[image]");
+  if (missing.length) return { error: `usage block missing/invalid: ${missing.join(", ")}` };
+  const input = g.total_input_tokens as number;
+  const thought = (g.total_thought_tokens as number | undefined) ?? 0;
+  const out = g.total_output_tokens as number;
+  if (imgOut > out) return { error: `usage block inconsistent: image tokens ${imgOut} > total_output_tokens ${out}` };
+  const textOut = out - imgOut;
+  const usd = (input * PRO_RATES.inputPerMTok + (textOut + thought) * PRO_RATES.textThinkingOutputPerMTok + imgOut * PRO_RATES.imageOutputPerMTok) / 1e6;
+  return { usd, detail: `input ${input} tok x $2/M + text ${textOut} + thought ${thought} tok x $12/M + image ${imgOut} tok x $120/M` };
+}
+
+/** The Pro twin of geminiCost: identical F9/F15/F6 classification, Pro rates. */
+function proCost(r: AttemptResult, _estimate: number): StepCost {
+  const j = r.json as Interaction | null;
+  if (r.status !== null && r.status >= 400 && r.status < 500 && r.status !== 429 && !j?.usage) {
+    return { usd: 0, basis: `estimated $0: HTTP ${r.status} error with no usage (Google bills on tokens; none reported)`, billed: false };
+  }
+  if (r.outcome !== "ok") return { usd: null, basis: `unresolved: ${r.outcome} status=${r.status}; reservation kept`, billed: false };
+  const hasImage = outputImages(j).length > 0;
+  const f9 = !hasImage && isF9TextOnly(j);
+  const rule = hasImage ? "image returned" : f9 ? "F9 text-only reply" : "F15 no image, not text-only";
+  const c = proCostFromUsage(j?.usage, { imageTokensRequired: !f9 });
+  if ("error" in c) return { usd: null, basis: `unresolved: HTTP ${r.status} (${rule}) but ${c.error}; reservation kept until checked against Google Cloud billing`, billed: false };
+  return { usd: c.usd, basis: `estimated from API usage tokens x Pro rates (${rule}): ${c.detail}; Gemini returns no billed-cost field`, billed: false };
 }
 
 /**
@@ -169,7 +213,7 @@ function usageCost(j: unknown, imageTokensRequired: boolean): { usd: number; det
  * - 2xx: the spike's geminiCost rule (image / F9 text-only / F15), priced from tokens.
  * - 429 is settled by the caller (F4: $0 assumed_zero_429 unless the body has usage; F8 quota: $0 rejected).
  */
-function googleAttemptCost(r: AttemptResult, estMicros: number): { usd: number | null; basis: string; source: CostSource | null } {
+function googleAttemptCost(r: AttemptResult, estMicros: number, usePro: boolean): { usd: number | null; basis: string; source: CostSource | null } {
   if (r.outcome === "timeout" || r.outcome === "connection_error") {
     return { usd: null, basis: `unresolved: ${r.outcome} after send; reservation kept until checked against Google Cloud billing`, source: null };
   }
@@ -178,12 +222,12 @@ function googleAttemptCost(r: AttemptResult, estMicros: number): { usd: number |
     return { usd: 0, basis: `estimated $0: HTTP ${st} rejection with no usage (F6/F7/F8; Google bills on tokens; none reported); confirm against Google Cloud billing`, source: "assumed_zero_rejected" };
   }
   if (st !== null && st >= 500) {
-    const c = usageCost(r.json, false);
+    const c = usageCost(r.json, false, usePro);
     return c
       ? { usd: c.usd, basis: `estimated from API usage tokens (HTTP ${st} error carried usage, F5): ${c.detail}`, source: "estimated_tokens" }
       : { usd: null, basis: `unresolved: HTTP ${st} with no usage; reservation kept until checked against Google Cloud billing`, source: null };
   }
-  const c: StepCost = geminiCost(r, estMicros);
+  const c: StepCost = usePro ? proCost(r, estMicros) : geminiCost(r, estMicros);
   if (c.usd === null) return { usd: null, basis: c.basis, source: null };
   return { usd: c.usd, basis: c.basis, source: "estimated_tokens" };
 }
@@ -196,7 +240,7 @@ function traceOf(r: AttemptResult): string | null {
 
 // ---- generate ----
 
-export async function generate(d: GoogleDeps, req: { prompt: string; ratio: string; generationId: string }): Promise<GoogleOutcome> {
+export async function generate(d: GoogleDeps, req: { prompt: string; ratio: string; generationId: string; model?: string }): Promise<GoogleOutcome> {
   const log = (m: string) => d.log?.(d.keys.scrub(m));
   const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const random = d.random ?? Math.random;
@@ -209,15 +253,17 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
   if (!prompt) return { kind: "error", code: "bad_input", message: "Type a prompt first.", clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: null };
   if (prompt.length > CAPABILITIES.maxPromptChars) return { kind: "error", code: "bad_input", message: `Not supported by Nano Banana 2: prompts over ${CAPABILITIES.maxPromptChars} characters`, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: null };
   const resolution = resolutionFor(d.switches);
+  const model = req.model ?? MODEL; // FD:11: the Pro card passes its own model id
+  const usePro = model === PRO_MODEL;
 
   // Free key check before the first paid call (F1).
   const kc = await checkGoogleKey(d);
   if (!kc.ok) return { kind: "error", code: kc.code, message: kc.message, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: mapped.send };
 
-  const est = estimate(d.db, d.prices, { provider: "google", model: MODEL, kind: "generate", resolution, quality: null });
+  const est = estimate(d.db, d.prices, { provider: "google", model, kind: "generate", resolution, quality: null });
   // item 12/D4: store:false is a constant on every body; the prompt goes out as input; 1K image requested.
   const body: Record<string, unknown> = {
-    model: MODEL,
+    model,
     input: prompt,
     response_format: { type: "image", aspect_ratio: mapped.send, image_size: "1K" },
     store: false,
@@ -227,7 +273,7 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let res;
     try {
-      res = reserve(d.db, { provider: "google", model: MODEL, kind: "generate", resolution, quality: null, generationId: req.generationId, attempt, estimateMicros: est.micros, estimateSource: est.source });
+      res = reserve(d.db, { provider: "google", model, kind: "generate", resolution, quality: null, generationId: req.generationId, attempt, estimateMicros: est.micros, estimateSource: est.source });
     } catch (e) {
       if (e instanceof CapRefused) {
         log(`google generate gen=${req.generationId} attempt=${attempt} refused by cap before sending`);
@@ -305,7 +351,7 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
     // body has it.
     if (st === 429) {
       const cls = classifyGoogleError(st, j, r, d.keys);
-      const c2 = usageCost(j, false);
+      const c2 = usageCost(j, false, usePro);
       const costInfo = cls.code === "quota"
         ? settleAt(0, "assumed_zero_rejected", `estimated $0: Google quota/billing 429 (F8)${cls.detail ? `: ${cls.detail}` : ""}`)
         : c2 ? settleAt(c2.usd, "estimated_tokens", `estimated from API usage tokens on a 429 (F4): ${c2.detail}`)
@@ -329,7 +375,7 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
       return finish(costInfo, "rate_limit", `Rate limited by Google.${asked} Try again.`);
     }
 
-    const cost = googleAttemptCost(r, est.micros);
+    const cost = googleAttemptCost(r, est.micros, usePro);
 
     if (st !== null && st >= 200 && st < 300) {
       // Malformed / oversized 200 (F15): settle from usage if present, otherwise hold. Never priced at the text rate.

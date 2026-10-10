@@ -276,6 +276,25 @@ test("stripping (item 26): the raw response never lands in the DB (only the imag
   assert.ok(detail.length < 2000);
 }));
 
+test("FD:11 Nano Banana Pro card: its own model id goes out; cost uses Pro rates from the same token counts", withG(async (t, g) => {
+  const out = await googleGenerate(googleDepsOf(t.app), { prompt: "a pro mock", ratio: "1:1", generationId: GEN, model: "gemini-3-pro-image" });
+  assert.equal(out.kind, "ok");
+  assert.equal(g.posts()[0].body!.model, "gemini-3-pro-image");
+  const [row] = ledgerRows(t.app);
+  assert.equal(row.provider, "google");
+  assert.equal(row.model, "gemini-3-pro-image");
+  assert.equal(row.estimate_micro_usd, 134000);
+  assert.equal(row.actual_micro_usd, toMicros((26 * 2 + 429 * 12 + 1120 * 120) / 1e6));
+  assert.equal(row.cost_source, "estimated_tokens");
+}));
+
+test("FD:11: a Pro refusal is classified the same way, priced at Pro text rates", withG(async (t) => {
+  const out = await googleGenerate(googleDepsOf(t.app), { prompt: "pro refusal", ratio: "1:1", generationId: GEN, model: "gemini-3-pro-image" });
+  assert.equal(out.kind, "refused");
+  assert.equal(out.kind === "refused" ? out.message : "", "Google returned no image: I can't help with that.");
+  assert.equal(ledgerRows(t.app)[0].actual_micro_usd, toMicros((12 * 2 + 7 * 12) / 1e6));
+}, { interactions: [() => jsonRes(200, { id: "int-1", status: "completed", steps: [{ type: "thought", summary: [] }, { type: "model_output", content: [{ type: "text", text: "I can't help with that." }] }], usage: { total_input_tokens: 12, total_output_tokens: 7, total_thought_tokens: 0 } })] }));
+
 test("cap: a $0.10 cap blocks the next call before it is sent", withG(async (t, g) => {
   const first = await runG(t);
   assert.equal(first.kind, "ok");

@@ -87,7 +87,7 @@ export async function executeGeneration(d: AppDeps, input: GenExecInput): Promis
 
   const out: XaiOutcome | GoogleOutcome = input.provider === "xai"
     ? await xaiGenerate(d, { prompt: input.prompt, ratio: input.ratio, generationId: input.generationId })
-    : await googleGenerate(googleDepsOf(d), { prompt: input.prompt, ratio: input.ratio, generationId: input.generationId });
+    : await googleGenerate(googleDepsOf(d), { prompt: input.prompt, ratio: input.ratio, generationId: input.generationId, model: input.model });
   view.costText = costText(out.cost);
   view.ref = out.clientRequestId;
   const common = { runId: input.runId, provider: input.provider, model: input.model, generationId: input.generationId, prompt: input.prompt, ratio: input.ratio };

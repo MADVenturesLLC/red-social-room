@@ -11,7 +11,7 @@ import type { DB } from "./db.ts";
 import type { KeyCheckCache } from "./xai/adapter.ts";
 
 export interface CreatorStatus {
-  id: "xai" | "google";
+  id: string;
   name: string;
   model: string;
   priceText: string;
@@ -37,17 +37,17 @@ export interface AppStatus {
 }
 
 function cardOf(d: AppDeps, def: (typeof CREATORS)[number], totals: MonthTotals): CreatorStatus {
-  const keyStore = def.id === "google" ? d.googleKeys : d.keys;
-  const keyCheck: KeyCheckCache = def.id === "google" ? d.googleKeyCheck : d.keyCheck;
+  const keyStore = def.provider === "google" ? d.googleKeys : d.keys;
+  const keyCheck: KeyCheckCache = def.provider === "google" ? d.googleKeyCheck : d.keyCheck;
   const key = keyStore.status();
   const fp = keyStore.fingerprint();
   const checked = fp !== null && keyCheck.fingerprint === fp;
-  const priceQuality = def.id === "xai" ? qualityFor(d.switches, "generate").priceQuality : null;
-  const est = estimate(d.db, d.prices, { provider: def.id, model: def.model, kind: "generate", resolution: resolutionFor(d.switches), quality: priceQuality });
+  const priceQuality = def.provider === "xai" ? qualityFor(d.switches, "generate").priceQuality : null;
+  const est = estimate(d.db, d.prices, { provider: def.provider, model: def.model, kind: "generate", resolution: resolutionFor(d.switches), quality: priceQuality });
   let state: CreatorStatus["state"] = "ready", stateText = "Ready";
   if (!key.set) { state = "no_key"; stateText = "No key — add it in Settings"; }
   else if (totals.countedMicros + est.micros > totals.capMicros) { state = "cap_reached"; stateText = "Cap reached"; }
-  else if (providerProblems(d.db, def.id)) { state = "provider_problems"; stateText = "Provider having problems"; }
+  else if (providerProblems(d.db, def.provider)) { state = "provider_problems"; stateText = "Provider having problems"; }
   else if (!checked || !keyCheck.ok) { state = "key_unchecked"; stateText = checked ? (keyCheck.message ?? "Key check failed — see Settings") : "Key not checked yet (checked before the first call)"; }
   return {
     id: def.id, name: def.name, model: def.model,
@@ -82,10 +82,11 @@ export function providerProblems(db: DB, provider: "xai" | "google"): boolean {
 export function appStatus(d: AppDeps): AppStatus {
   const totals = monthTotals(d.db);
   const creators = CREATORS.map((def) => cardOf(d, def, totals));
-  const xai = creators[0];
+  const xai = creators.find((c) => c.id === "xai") ?? creators[0];
+  const goog = creators.find((c) => c.id === "google") ?? creators[1];
   return {
     key: { set: xai.keySet, source: xai.keySource, last4: xai.keyLast4, checked: xai.checked, checkOk: xai.checkOk, versionListing: xai.versionListing, checkMessage: xai.checkMessage },
-    googleKey: (() => { const g = creators[1]; return { set: g.keySet, source: g.keySource, last4: g.keyLast4, checked: g.checked, checkOk: g.checkOk, versionListing: g.versionListing, checkMessage: g.checkMessage }; })(),
+    googleKey: { set: goog.keySet, source: goog.keySource, last4: goog.keyLast4, checked: goog.checked, checkOk: goog.checkOk, versionListing: goog.versionListing, checkMessage: goog.checkMessage },
     creator: xai,
     creators,
     totals,

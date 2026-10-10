@@ -10,7 +10,8 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
   const [prompt, setPrompt] = useState("");
   const [ratio, setRatio] = useState(props.ratios[0] ?? "4:5");
   const [selected, setSelected] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(props.creators.map((c) => [c.id, c.state === "ready" || c.state === "key_unchecked"])));
+    // FD:11: Nano Banana 2 is the default Google creator; the Pro card starts unticked.
+    Object.fromEntries(props.creators.map((c) => [c.id, c.id !== "google-pro" && (c.state === "ready" || c.state === "key_unchecked")])));
   const [counts, setCounts] = useState<Record<string, number>>(() => Object.fromEntries(props.creators.map((c) => [c.id, 1])));
   const [busy, setBusy] = useState(false);
   const [run, setRun] = useState<RunView | null>(null);

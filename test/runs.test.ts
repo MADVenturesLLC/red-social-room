@@ -79,6 +79,22 @@ test("partial: one creator fails (503, unresolved) while the other returns; the 
   } finally { t.cleanup(); }
 });
 
+test("FD:11: the Nano Banana Pro card runs as its own job on the shared Google pool", async () => {
+  const p = fakeProviders();
+  const t = makeApp({ fetch: p.fetch });
+  try {
+    const { runId } = start(t, [{ id: "google-pro", n: 1 }]);
+    await until(() => (runView(t.app, runId)?.status ?? "running") !== "running");
+    const v = runView(t.app, runId)!;
+    assert.equal(v.status, "ok");
+    assert.equal(v.jobs[0].name, "Nano Banana Pro");
+    assert.equal(p.google.posts()[0].body!.model, "gemini-3-pro-image");
+    const [row] = ledgerRows(t.app);
+    assert.equal(row.model, "gemini-3-pro-image");
+    assert.equal(row.provider, "google");
+  } finally { t.cleanup(); }
+});
+
 test("blocked prompt (F10): nothing is sent for any tile; every tile shows the block", async () => {
   const p = fakeProviders();
   const t = makeApp({ fetch: p.fetch });
@@ -155,6 +171,7 @@ test("validation: creators, counts and prompt", () => {
   assert.throws(() => parseRunInput({ prompt: "", ratio: "4:5", creators: [{ id: "xai", n: 1 }] }), RunInputError);
   assert.throws(() => parseRunInput({ prompt: "x", ratio: "4:5", creators: [{ id: "nope", n: 1 }] }), RunInputError);
   assert.deepEqual(parseRunInput({ prompt: " hi ", ratio: "4:5", creators: [{ id: "google", n: 2 }] }), { prompt: "hi", ratio: "4:5", creators: [{ id: "google", n: 2 }] });
+  assert.deepEqual(parseRunInput({ prompt: "x", ratio: "4:5", creators: [{ id: "google-pro", n: 1 }] }).creators, [{ id: "google-pro", n: 1 }]);
 });
 
 test("resetStrandedJobs marks queued/running jobs from a stopped process", () => {
