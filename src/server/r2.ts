@@ -21,7 +21,9 @@ export function r2Store(cfg: R2Config, fetchImpl: typeof fetch = fetch): ObjectS
   return {
     async put(key, body, contentType = "application/octet-stream") {
       assertObjectKey(key);
-      const res = await client.fetch(url(key), { method: "PUT", body: new Uint8Array(body), headers: { "content-type": contentType } });
+      // R2 (unlike some S3 endpoints) refuses a PUT without an explicit Content-Length (live defect, first
+      // real backup: HTTP 411 MissingContentLength) — undici does not add one for this body shape.
+      const res = await client.fetch(url(key), { method: "PUT", body: new Uint8Array(body), headers: { "content-type": contentType, "content-length": String(body.byteLength) } });
       if (!res.ok) throw new Error(`R2 refused the upload of ${key} (HTTP ${res.status}): ${(await res.text()).slice(0, 200)}`);
     },
     async get(key) {
