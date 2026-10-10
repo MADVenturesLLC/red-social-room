@@ -773,6 +773,88 @@ test("A3 reference over HTTP: 'Use as reference' sends the image with the prompt
   assert.match(xj.error, /can't take reference images/);
 });
 
+test("A4 over HTTP: the Brand kit stores a PNG and an SVG (served under a sandbox), refuses a script SVG, and deletes from the kit", async () => {
+  const png = (await sharp({ create: { width: 64, height: 32, channels: 4, background: "#c8102e" } }).png().toBuffer()).toString("base64");
+  const created = await post("/api/brand", { data: png, name: "Roundel" });
+  assert.equal(created.status, 201);
+  const item = JSON.parse(await record("POST /api/brand (png)", created)) as { id: number; assetId: string; mime: string };
+  assert.equal(item.mime, "image/png");
+  assert.match(item.assetId, /^[a-f0-9]{64}$/);
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="#111"/></svg>';
+  const svgRes = await post("/api/brand", { data: Buffer.from(svg).toString("base64"), name: "Wordmark" });
+  assert.equal(svgRes.status, 201);
+  const svgItem = JSON.parse(await record("POST /api/brand (svg)", svgRes)) as { assetId: string; mime: string };
+  assert.equal(svgItem.mime, "image/svg+xml");
+  const served = await fetch(`${base}/api/assets/${svgItem.assetId}`);
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("content-type"), "image/svg+xml");
+  assert.match(served.headers.get("content-security-policy") ?? "", /sandbox/);
+  assert.match(await record("GET /api/assets (svg logo)", served), /<svg/);
+  const list = JSON.parse(await record("GET /api/brand", await fetch(`${base}/api/brand`))) as { items: Array<{ id: number }> };
+  assert.equal(list.items.length, 2);
+  const bad = await post("/api/brand", { data: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>').toString("base64"), name: "Evil" });
+  assert.equal(bad.status, 400);
+  assert.match((JSON.parse(await record("POST /api/brand (script svg)", bad)) as { error: string }).error, /cannot contain scripts/);
+  const del = await fetch(`${base}/api/brand?id=${item.id}`, { method: "DELETE", headers: { "Content-Type": "application/json", "x-rsr": "1" } });
+  assert.equal(del.status, 200);
+  assert.equal((JSON.parse(await record("DELETE /api/brand", del)) as { ok: boolean }).ok, true);
+  const list2 = JSON.parse(await record("GET /api/brand (after delete)", await fetch(`${base}/api/brand`))) as { items: unknown[] };
+  assert.equal(list2.items.length, 1);
+});
+
+test("A4 acceptance over HTTP: design a post, save it, reopen it, change only the headline - crop, slider and logo stay", async () => {
+  const g = JSON.parse(await record("POST /api/generate (A4)", await post("/api/generate", { prompt: "a lighthouse at dusk", ratio: "4:5" }))) as { status: string; generationId: string; image: { assetId: string } };
+  assert.equal(g.status, "ok", JSON.stringify(g));
+  const saved = JSON.parse(await record("POST /api/library (A4)", await post("/api/library", { generationId: g.generationId, notes: "design me" }))) as { id: number };
+  const postId = saved.id;
+  const fresh = JSON.parse(await record("GET /api/posts (fresh)", await fetch(`${base}/api/posts/${postId}`))) as { recipe: unknown; sourceAssetId: string; assetId: string };
+  assert.equal(fresh.recipe, null);
+  const original = fresh.sourceAssetId;
+  assert.equal(fresh.assetId, original, "an untouched post is its own source");
+
+  const logo = JSON.parse(await record("POST /api/brand (A4 logo)", await post("/api/brand", { data: (await sharp({ create: { width: 48, height: 48, channels: 4, background: "#224466" } }).png().toBuffer()).toString("base64"), name: "Mark" }))) as { assetId: string };
+  const render1 = (await uploadPng(80, 80)).assetId; // stand-in for the browser's flattened PNG
+  const recipe1 = {
+    version: 1, rotate: 0, crop: { x: 0.1, y: 0.05, w: 0.8, h: 0.9 },
+    adjust: { brightness: 5, contrast: 0, saturation: 0, warmth: 40 },
+    texts: [{ id: "t1", text: "First headline", x: 0.1, y: 0.1, font: "Anton", size: 0.12, color: "#ffffff", strokeWidth: 0, strokeColor: "#000000", shadow: true }],
+    logos: [{ id: "l1", assetId: logo.assetId, x: 0.4, y: 0.7, scale: 0.25 }],
+  };
+  const up1 = await post("/api/posts/update", { postId, assetId: render1, recipe: recipe1 });
+  assert.equal(up1.status, 200);
+  await record("POST /api/posts/update (v1)", up1);
+  const got1 = JSON.parse(await record("GET /api/posts (v1)", await fetch(`${base}/api/posts/${postId}`))) as { recipe: typeof recipe1; sourceAssetId: string; assetId: string };
+  assert.deepEqual(got1.recipe, recipe1);
+  assert.equal(got1.assetId, render1);
+  assert.equal(got1.sourceAssetId, original, "the untouched original stays the source");
+  const designHtml = await record(`GET /design/${postId}`, await fetch(`${base}/design/${postId}`));
+  assert.match(designHtml, /canvas work/);
+  const libHtml = await record("GET /library (designed)", await fetch(`${base}/library`));
+  assert.match(libHtml, /Edit design/);
+
+  // Reopen and change only the headline: crop, slider and logo stay, the source never moves.
+  const render2 = (await uploadPng(81, 81)).assetId;
+  const recipe2 = { ...recipe1, texts: [{ ...recipe1.texts[0], text: "Second headline" }] };
+  const up2 = await post("/api/posts/update", { postId, assetId: render2, recipe: recipe2 });
+  assert.equal(up2.status, 200);
+  await record("POST /api/posts/update (v2)", up2);
+  const got2 = JSON.parse(await record("GET /api/posts (v2)", await fetch(`${base}/api/posts/${postId}`))) as { recipe: typeof recipe2; sourceAssetId: string; assetId: string };
+  assert.equal(got2.recipe.texts[0].text, "Second headline");
+  assert.deepEqual(got2.recipe.crop, recipe1.crop);
+  assert.deepEqual(got2.recipe.logos, recipe1.logos);
+  assert.equal(got2.recipe.adjust.warmth, 40);
+  assert.equal(got2.sourceAssetId, original);
+  assert.equal(got2.assetId, render2, "the library now shows the second render");
+  const libHtml2 = await record("GET /library (after change)", await fetch(`${base}/library`));
+  assert.match(libHtml2, new RegExp(`/api/assets/${render2}`));
+
+  const badGet = await fetch(`${base}/api/posts/99999`);
+  assert.equal(badGet.status, 404);
+  const badUpd = await post("/api/posts/update", { postId, assetId: "f".repeat(64), recipe: recipe1 });
+  assert.equal(badUpd.status, 400);
+  assert.match((JSON.parse(await record("POST /api/posts/update (missing render)", badUpd)) as { error: string }).error, /not in the store/);
+});
+
 test("no response body or header, and no built browser file, contains any key (full, base64, or 12-char fragment)", async () => {
   // Every JS/CSS file the pages reference, plus every file Next built for the browser.
   for (const page of ["/", "/library", "/settings"]) {

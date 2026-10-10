@@ -79,7 +79,9 @@ CREATE TABLE IF NOT EXISTS posts (
   asset_id TEXT NOT NULL REFERENCES assets(id),
   prompt TEXT NOT NULL,
   model TEXT NOT NULL,
-  notes TEXT NOT NULL DEFAULT ''
+  notes TEXT NOT NULL DEFAULT '',
+  recipe TEXT,                                           -- A4: the editor recipe (JSON) saved beside the flattened render
+  source_asset_id TEXT REFERENCES assets(id)             -- A4: the untouched original the recipe renders from
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(prompt, notes, model, content='posts', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
@@ -93,6 +95,14 @@ CREATE TRIGGER IF NOT EXISTS posts_au AFTER UPDATE ON posts BEGIN
   INSERT INTO posts_fts(posts_fts, rowid, prompt, notes, model) VALUES ('delete', old.id, old.prompt, old.notes, old.model);
   INSERT INTO posts_fts(rowid, prompt, notes, model) VALUES (new.id, new.prompt, new.notes, new.model);
 END;
+
+-- A4: the Brand kit (T:96). Logos are ordinary assets (png/jpeg/webp/svg); this table is the kit's list.
+CREATE TABLE IF NOT EXISTS brand_kit (
+  id INTEGER PRIMARY KEY,
+  asset_id TEXT NOT NULL REFERENCES assets(id),
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS prompt_checks (
   id INTEGER PRIMARY KEY,
@@ -216,6 +226,7 @@ export function openDb(path: string, opts: { spikeLedgerPath?: string | null; se
   migrateLedger(db);
   db.exec(SCHEMA);
   migrateA3(db);
+  migrateA4(db);
   const spike = opts.spikeLedgerPath === undefined ? SPIKE_LEDGER_PATH : opts.spikeLedgerPath;
   importLedgerOnce(db, spike, opts.seeds ?? (spike ? LEDGER_SEEDS : []));
   return db;
@@ -241,6 +252,14 @@ function migrateA3(db: DB): void {
   const gens = cols("generations");
   if (!gens.has("parent_asset_id")) db.exec("ALTER TABLE generations ADD COLUMN parent_asset_id TEXT REFERENCES assets(id)");
   if (!gens.has("mask_asset_id")) db.exec("ALTER TABLE generations ADD COLUMN mask_asset_id TEXT REFERENCES assets(id)");
+}
+
+/** A4: CREATE TABLE IF NOT EXISTS never alters an existing table, so older databases get the editor's
+ *  posts columns here (the brand_kit table comes from SCHEMA above; it is new, so it always exists). */
+function migrateA4(db: DB): void {
+  const cols = new Set((db.prepare("PRAGMA table_info(posts)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!cols.has("recipe")) db.exec("ALTER TABLE posts ADD COLUMN recipe TEXT");
+  if (!cols.has("source_asset_id")) db.exec("ALTER TABLE posts ADD COLUMN source_asset_id TEXT REFERENCES assets(id)");
 }
 
 /** Run fn inside BEGIN IMMEDIATE ... COMMIT (rolled back on throw). */

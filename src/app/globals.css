@@ -27,3 +27,26 @@ td, th { border-bottom: 1px solid var(--bg2); padding: .3rem; text-align: left; 
 .strip .v img { width: 100%; height: auto; border-radius: 4px; display: block; }
 .strip .v[data-selected="true"] { outline: 2px solid var(--red); }
 .strip .v.failed { border-color: var(--red); }
+
+/* A4: the deterministic editor (client canvas; no model). */
+.design-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1rem; align-items: start; }
+@media (max-width: 860px) { .design-wrap { grid-template-columns: 1fr; } }
+.stage-box { border: 1px solid var(--bg2); border-radius: 8px; padding: .6rem; display: flex; justify-content: center; }
+.panel { border: 1px solid var(--bg2); border-radius: 8px; padding: .75rem; margin: 0 0 .75rem; }
+.panel h3 { margin: 0 0 .5rem; font-size: .95rem; }
+.ctl-row { display: flex; align-items: center; gap: .5rem; margin: .4rem 0; }
+.ctl-row label { min-width: 72px; font-size: .9rem; }
+.ctl-row input[type="range"] { flex: 1; }
+.ctl-row input[type="text"] { max-width: none; }
+.slider-val { width: 44px; text-align: right; font-variant-numeric: tabular-nums; font-size: .85rem; }
+.layer-row { display: flex; align-items: center; gap: .5rem; padding: .25rem .4rem; border-radius: 6px; cursor: pointer; }
+.layer-row.sel { outline: 2px solid var(--red); background: var(--bg2); }
+.layer-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+.chip { padding: .25rem .7rem; border-radius: 999px; background: transparent; color: inherit; border: 1px solid var(--bg2); font-size: .85rem; }
+.chip.on { border-color: var(--red); color: var(--red); }
+.brand-item { display: flex; align-items: center; gap: .5rem; margin: .4rem 0; }
+.brand-item img { width: 44px; height: 44px; object-fit: contain; background: var(--bg2); border-radius: 6px; border: 1px solid var(--bg2); }
+.mini { font-size: .8rem; }
+.danger-link { background: none; border: 0; color: var(--red); cursor: pointer; padding: 0; }
+input[type="color"] { width: 42px; height: 28px; padding: 2px; border: 1px solid var(--bg2); border-radius: 6px; background: transparent; }
