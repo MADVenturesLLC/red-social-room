@@ -563,6 +563,31 @@ async function readSseAll(path: string, ms = 20_000): Promise<{ text: string; en
   return { text, ended };
 }
 
+test("A2: the Settings check and save routes run the Google check on the Google store (mis-wire regression)", async () => {
+  // The Google model GET must carry the Google key (x-goog-api-key) and no xAI bearer, and Google's result
+  // must land in the Google cache - not overwrite the xAI check message (the live defect this guards).
+  const before = mockSeen.filter((m) => m.path === "/v1beta/models/gemini-3.1-flash-image").length;
+  const res = JSON.parse(await record("POST /api/settings/check (A2 google store)", await post("/api/settings/check", {}))) as { check: { ok: boolean; message: string | null }; googleCheck: { ok: boolean; message: string | null } | null };
+  assert.equal(res.check.ok, true);
+  assert.deepEqual(res.googleCheck, { ok: true, message: null });
+  const modelGets = mockSeen.filter((m) => m.path === "/v1beta/models/gemini-3.1-flash-image");
+  assert.ok(modelGets.length > before, "the Google check called the models endpoint");
+  const last = modelGets.at(-1)!;
+  assert.equal(last.googleAuth, GEMINI_DUMMY, "the Google check used the Google key store");
+  assert.equal(last.auth, undefined, "no xAI bearer on a Google call");
+  const sj = JSON.parse(await record("GET /api/status (A2 store wires)", await fetch(`${base}/api/status`))) as { googleKey: { checked: boolean; checkOk: boolean }; key: { checkMessage: string | null } };
+  assert.equal(sj.googleKey.checked, true);
+  assert.equal(sj.googleKey.checkOk, true);
+  assert.equal(sj.key.checkMessage, null, "the Google result did not leak into the xAI cache");
+  // The save route for Google: same wiring, and the saved key becomes the active source.
+  const sv = JSON.parse(await record("POST /api/settings/key (A2 google)", await post("/api/settings/key", { provider: "google", key: GEMINI_DUMMY }))) as { key: { set: boolean; source: string }; check: { ok: boolean } };
+  assert.equal(sv.key.set, true);
+  assert.equal(sv.key.source, "settings");
+  assert.equal(sv.check.ok, true);
+  const lg = mockSeen.filter((m) => m.path === "/v1beta/models/gemini-3.1-flash-image").at(-1)!;
+  assert.equal(lg.googleAuth, GEMINI_DUMMY, "the save-route check used the Google key store");
+});
+
 test("A2 SSE: the events stream delivers job updates and the final run frame, and closes for a finished run", async () => {
   const started = JSON.parse(await record("POST /api/run (sse)", await post("/api/run", { prompt: "sse-hold: a streamed kite", ratio: "1:1", creators: [{ id: "xai", n: 1 }] }))) as { runId: string };
   await sseArrived; // the job is in flight at the fake provider

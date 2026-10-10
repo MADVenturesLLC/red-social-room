@@ -45,6 +45,9 @@ export const CAPABILITIES = Object.freeze({
 });
 
 export interface GoogleDeps {
+  /** Compile-time brand: only googleDepsOf() builds this. Keeps the whole-app object from being passed
+   *  where Google's own stores are required (it would silently use the xAI store). */
+  readonly kind: "google";
   db: DB;
   keys: KeyStore;
   prices: readonly PriceRow[];

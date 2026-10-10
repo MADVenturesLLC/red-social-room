@@ -5,6 +5,7 @@ import { getApp } from "../../../../server/app.ts";
 import { KeyRejectedInput } from "../../../../server/keys.ts";
 import { checkKey } from "../../../../server/xai/adapter.ts";
 import { checkGoogleKey } from "../../../../server/google/adapter.ts";
+import { googleDepsOf } from "../../../../server/execute.ts";
 import { guardPost, json, readJson } from "../../../../server/route-util.ts";
 import { notWritableResponse } from "../../../../server/writable.ts";
 import { join } from "node:path";
@@ -20,7 +21,7 @@ export async function POST(req: Request): Promise<Response> {
   const provider = (body as Record<string, unknown>).provider === "google" ? "google" as const : "xai" as const;
   try {
     const key = provider === "google" ? app.googleKeys.save(body.key) : app.keys.save(body.key);
-    const c = provider === "google" ? await checkGoogleKey(app, { force: true }) : await checkKey(app, { force: true });
+    const c = provider === "google" ? await checkGoogleKey(googleDepsOf(app), { force: true }) : await checkKey(app, { force: true });
     return json({ key, check: { ok: c.ok, message: c.ok ? null : c.message } });
   } catch (e) {
     if (e instanceof KeyRejectedInput) return json({ error: e.message }, 400);
