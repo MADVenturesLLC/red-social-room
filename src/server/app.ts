@@ -12,6 +12,7 @@ import { loadPrices } from "./prices.ts";
 import { nameListMethod } from "./prompt-check.ts";
 import { checkKey, type KeyCheckCache } from "./xai/adapter.ts";
 import { checkGoogleKey } from "./google/adapter.ts";
+import { googleDepsOf } from "./execute.ts";
 import { resetStrandedJobs } from "./runs.ts";
 import type { AppDeps } from "./generate.ts";
 
@@ -74,7 +75,7 @@ export function getApp(): AppDeps {
   if (stranded > 0) app.log?.(`marked ${stranded} stranded run job(s) at start`);
   // Free key checks at app start (Amendment 1 item 19). Not awaited; failures show on the cards and in Settings.
   if (keys.status().set) void checkKey(app).catch(() => undefined);
-  if (googleKeys.status().set) void checkGoogleKey(app).catch(() => undefined);
+  if (googleKeys.status().set) void checkGoogleKey(googleDepsOf(app)).catch(() => undefined);
   return app;
 }
 

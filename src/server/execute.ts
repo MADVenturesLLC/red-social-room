@@ -122,6 +122,7 @@ export async function executeGeneration(d: AppDeps, input: GenExecInput): Promis
 /** The Google adapter's deps slice of the app. */
 export function googleDepsOf(d: AppDeps): GoogleDeps {
   return {
+    kind: "google",
     db: d.db, keys: d.googleKeys, prices: d.prices, switches: d.switches, fetch: d.fetch,
     baseUrl: d.googleBaseUrl, timeoutMs: d.timeoutMs, keyCheckTimeoutMs: d.keyCheckTimeoutMs,
     sleep: d.sleep, random: d.random, log: d.log, keyCheck: d.googleKeyCheck,
