@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS renditions (
   post_id INTEGER NOT NULL REFERENCES posts(id),
   preset_id TEXT NOT NULL,
   asset_id TEXT NOT NULL REFERENCES assets(id),
+  source_asset_id TEXT NOT NULL REFERENCES assets(id),  -- review 3: what it was made FROM; a design change makes it stale
   method TEXT NOT NULL CHECK (method IN ('crop','ai_extend','ai_rerender','local_outpaint','recraft_outpaint')),
   created_at TEXT NOT NULL,
   UNIQUE(post_id, preset_id)

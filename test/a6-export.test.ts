@@ -2,7 +2,7 @@
 // item 9 widen (happy + refusal, zero xAI), the ZIP writer and the full export (captions.txt included).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { makeApp, fakeProviders, jsonRes } from "./helpers.ts";
 import { insertAsset } from "../src/server/execute.ts";
@@ -12,6 +12,8 @@ import { loadSizes, makeRendition, widenRendition, listRenditions, exportZip, ra
 import { zipStore, zipRead, crc32 } from "../src/server/zip.ts";
 import { frameFor } from "../src/lib/crop-frame.ts";
 import { saveCaption } from "../src/server/captions.ts";
+import { updatePostDesign } from "../src/server/design.ts";
+import { defaultRecipe } from "../src/lib/recipe.ts";
 
 type T = ReturnType<typeof makeApp>;
 
@@ -170,5 +172,51 @@ test("A6 zip: the writer round-trips, is deterministic, and the export carries o
     assert.match(txt, /no caption saved yet/);
     await assert.rejects(exportZip(t.app.db, t.app.imagesDir, postId, ["x"]), /No rendition yet for X, landscape/);
     await assert.rejects(exportZip(t.app.db, t.app.imagesDir, postId, []), /at least one platform/);
+  } finally { t.cleanup(); }
+});
+
+test("A6 review 1: a worst-case high-entropy source still fits the YouTube 2 MB cap (the quality floor no longer stops early)", async () => {
+  const t = makeApp({ fetch: fakeProviders().fetch });
+  try {
+    // Random noise is the worst case for JPEG: essentially incompressible detail at 1376×768.
+    const noise = await sharp(Buffer.from(randomBytes(1376 * 768 * 3)), { raw: { width: 1376, height: 768, channels: 3 } }).png().toBuffer();
+    const img = putImage(t.app.imagesDir, noise);
+    insertAsset(t.app.db, img);
+    const genId = randomUUID();
+    t.app.db.prepare("INSERT INTO runs (id, created_at, prompt, status) VALUES (?, '2026-10-10T10:00:00-04:00', 'noise', 'ok')").run(genId);
+    t.app.db.prepare(`INSERT INTO generations (id, run_id, created_at, provider, model, kind, prompt, params, status, output_asset_id, display_asset_id)
+      VALUES (?, ?, '2026-10-10T10:00:00-04:00', 'xai', 'grok-imagine-image-2.0', 'generate', 'noise', '{}', 'ok', ?, ?)`).run(genId, genId, img.id, img.id);
+    const r = t.app.db.prepare("INSERT INTO posts (created_at, generation_id, asset_id, prompt, model, notes) VALUES ('2026-10-10T10:00:00-04:00', ?, ?, 'noise', 'grok-imagine-image-2.0', '')").run(genId, img.id);
+    const postId = Number(r.lastInsertRowid);
+    const { rendition } = await makeRendition(t.app.db, t.app.imagesDir, postId, "youtube", null);
+    assert.equal(rendition.width, 1280);
+    assert.equal(rendition.height, 720);
+    assert.ok(rendition.bytes < 2097152, `worst-case YouTube file is ${rendition.bytes} bytes (under 2 MB)`);
+  } finally { t.cleanup(); }
+});
+
+test("A6 review 3: after a design change, old renditions go stale - flagged in the list, refused by the export, cleared by remaking", async () => {
+  const t = makeApp({ fetch: fakeProviders().fetch });
+  try {
+    const { postId } = await seedPost(t, 928, 1152);
+    await makeRendition(t.app.db, t.app.imagesDir, postId, "instagram-portrait", null);
+    let rows = listRenditions(t.app.db, postId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].stale, false);
+    // A4 replaces the post's image (a design save).
+    const newBytes = await altJpeg(800, 1000, "#446688");
+    const newImg = putImage(t.app.imagesDir, newBytes);
+    insertAsset(t.app.db, newImg);
+    updatePostDesign(t.app.db, postId, newImg.id, defaultRecipe());
+    rows = listRenditions(t.app.db, postId);
+    assert.equal(rows[0].stale, true, "the rendition was made from the earlier image");
+    assert.equal(rows[0].ratioNote, null, "stale metadata is not shown as current");
+    await assert.rejects(exportZip(t.app.db, t.app.imagesDir, postId, ["instagram-portrait"]), /earlier version of this image/);
+    // Remaking from the current image clears the flag.
+    await makeRendition(t.app.db, t.app.imagesDir, postId, "instagram-portrait", null);
+    rows = listRenditions(t.app.db, postId);
+    assert.equal(rows[0].stale, false);
+    const { buf } = await exportZip(t.app.db, t.app.imagesDir, postId, ["instagram-portrait"]);
+    assert.ok(zipRead(buf).some((e) => e.name === "instagram-portrait.jpg"));
   } finally { t.cleanup(); }
 });

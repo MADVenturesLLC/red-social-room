@@ -65,7 +65,7 @@ export function upscaleNote(srcW: number | null, preset: SizePreset): string | n
 async function encodeExact(buf: Buffer, preset: SizePreset): Promise<Buffer> {
   let q = preset.quality;
   let out = await sharp(buf).resize(preset.width, preset.height, { fit: "cover", position: sharp.strategy.attention }).jpeg({ quality: q }).toBuffer();
-  while (preset.maxBytes !== null && out.length > preset.maxBytes && q > 40) {
+  while (preset.maxBytes !== null && out.length > preset.maxBytes && q > 10) {
     q -= 5;
     out = await sharp(buf).resize(preset.width, preset.height, { fit: "cover", position: sharp.strategy.attention }).jpeg({ quality: q }).toBuffer();
   }
@@ -84,7 +84,7 @@ async function encodeCropped(buf: Buffer, preset: SizePreset, crop: { x: number;
   if (Math.abs(got - want) / want > 0.02) throw new RenditionError(`The crop frame does not match ${preset.label} (${preset.ratio}).`);
   let q = preset.quality;
   let out = await sharp(buf).extract({ left, top, width, height }).resize(preset.width, preset.height, { fit: "fill" }).jpeg({ quality: q }).toBuffer();
-  while (preset.maxBytes !== null && out.length > preset.maxBytes && q > 40) {
+  while (preset.maxBytes !== null && out.length > preset.maxBytes && q > 10) {
     q -= 5;
     out = await sharp(buf).extract({ left, top, width, height }).resize(preset.width, preset.height, { fit: "fill" }).jpeg({ quality: q }).toBuffer();
   }
@@ -106,9 +106,9 @@ export interface RenditionResult {
   upscaledFrom: number | null; note: string | null; ratioNote: string | null;
 }
 
-function upsertRendition(db: DB, postId: number, presetId: string, assetId: string, method: "crop" | "ai_extend"): void {
-  db.prepare(`INSERT INTO renditions (post_id, preset_id, asset_id, method, created_at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(post_id, preset_id) DO UPDATE SET asset_id = excluded.asset_id, method = excluded.method, created_at = excluded.created_at`).run(postId, presetId, assetId, method, isoNY());
+function upsertRendition(db: DB, postId: number, presetId: string, assetId: string, sourceAssetId: string, method: "crop" | "ai_extend"): void {
+  db.prepare(`INSERT INTO renditions (post_id, preset_id, asset_id, source_asset_id, method, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(post_id, preset_id) DO UPDATE SET asset_id = excluded.asset_id, source_asset_id = excluded.source_asset_id, method = excluded.method, created_at = excluded.created_at`).run(postId, presetId, assetId, sourceAssetId, method, isoNY());
 }
 
 function postAsset(db: DB, postIdRaw: unknown): { id: number; assetId: string; mime: string } {
@@ -135,7 +135,7 @@ export async function makeRendition(db: DB, imagesDir: string, postIdRaw: unknow
   }
   const stored = putImage(imagesDir, buf);
   insertAsset(db, stored);
-  upsertRendition(db, post.id, preset.id, stored.id, "crop");
+  upsertRendition(db, post.id, preset.id, stored.id, post.assetId, "crop");
   return {
     preset,
     rendition: { presetId: preset.id, assetId: stored.id, width: stored.width!, height: stored.height!, bytes: stored.bytes, method: "crop", upscaledFrom: srcInfo.width, note: crop ? "Dragged crop" : "Smart crop (attention)", ratioNote: ratioNoteFor(srcInfo.width, srcInfo.height, preset) },
@@ -175,7 +175,7 @@ export async function widenRendition(d: AppDeps, postIdRaw: unknown, presetIdRaw
     if (got.width !== preset.width || got.height !== preset.height) throw new StoreError(`exact-size produced ${got.width}×${got.height}`);
     const stored = putImage(d.imagesDir, buf);
     insertAsset(d.db, stored);
-    upsertRendition(d.db, post.id, preset.id, stored.id, "ai_extend");
+    upsertRendition(d.db, post.id, preset.id, stored.id, post.assetId, "ai_extend");
     return {
       kind: "ok", message: null, code: null, costText: view.costText, fallback,
       preset,
@@ -187,13 +187,13 @@ export async function widenRendition(d: AppDeps, postIdRaw: unknown, presetIdRaw
   }
 }
 
-export interface RenditionRow { presetId: string; platform: string; label: string; width: number; height: number; assetId: string; bytes: number; method: string; createdAt: string; upscaledFrom: number | null; note: string | null; ratioNote: string | null; safeZone: SizePreset["safeZone"] }
+export interface RenditionRow { presetId: string; platform: string; label: string; width: number; height: number; assetId: string; bytes: number; method: string; createdAt: string; upscaledFrom: number | null; note: string | null; ratioNote: string | null; safeZone: SizePreset["safeZone"]; /** review 3: true when the post's image changed after this rendition was made. */ stale: boolean }
 
 export function listRenditions(db: DB, postIdRaw: unknown): RenditionRow[] {
   const id = Number(postIdRaw);
   if (!Number.isInteger(id) || id <= 0) return [];
   const presets = loadSizes();
-  const rows = db.prepare(`SELECT r.preset_id, r.asset_id, r.method, r.created_at, a.bytes FROM renditions r JOIN assets a ON a.id = r.asset_id WHERE r.post_id = ? ORDER BY r.preset_id`).all(id) as Array<Record<string, unknown>>;
+  const rows = db.prepare(`SELECT r.preset_id, r.asset_id, r.source_asset_id, r.method, r.created_at, a.bytes FROM renditions r JOIN assets a ON a.id = r.asset_id WHERE r.post_id = ? ORDER BY r.preset_id`).all(id) as Array<Record<string, unknown>>;
   const post = db.prepare("SELECT p.asset_id, a.width FROM posts p JOIN assets a ON a.id = p.asset_id WHERE p.id = ?").get(id) as { asset_id: string; width: number | null } | undefined;
   const srcW = post?.width ?? null;
   const srcH = (() => { const r = db.prepare("SELECT a.height FROM posts p JOIN assets a ON a.id = p.asset_id WHERE p.id = ?").get(id) as { height: number | null } | undefined; return r?.height ?? null; })();
@@ -201,7 +201,8 @@ export function listRenditions(db: DB, postIdRaw: unknown): RenditionRow[] {
   for (const row of rows) {
     const preset = presets.find((p) => p.id === row.preset_id);
     if (!preset) continue;
-    out.push({ presetId: preset.id, platform: preset.platform, label: preset.label, width: preset.width, height: preset.height, assetId: String(row.asset_id), bytes: Number(row.bytes), method: String(row.method), createdAt: String(row.created_at), upscaledFrom: srcW, note: null, ratioNote: ratioNoteFor(srcW, srcH, preset), safeZone: preset.safeZone });
+    const stale = String(row.source_asset_id) !== (post?.asset_id ?? "");
+    out.push({ presetId: preset.id, platform: preset.platform, label: preset.label, width: preset.width, height: preset.height, assetId: String(row.asset_id), bytes: Number(row.bytes), method: String(row.method), createdAt: String(row.created_at), upscaledFrom: stale ? null : srcW, note: null, ratioNote: stale ? null : ratioNoteFor(srcW, srcH, preset), safeZone: preset.safeZone, stale });
   }
   return out;
 }
@@ -243,8 +244,9 @@ export async function exportZip(db: DB, imagesDir: string, postIdRaw: unknown, p
   }
   const entries: Array<{ name: string; data: Buffer }> = [];
   for (const p of presets) {
-    const row = db.prepare("SELECT r.asset_id, a.mime FROM renditions r JOIN assets a ON a.id = r.asset_id WHERE r.post_id = ? AND r.preset_id = ?").get(post.id, p.id) as { asset_id: string; mime: string } | undefined;
+    const row = db.prepare("SELECT r.asset_id, r.source_asset_id, a.mime FROM renditions r JOIN assets a ON a.id = r.asset_id WHERE r.post_id = ? AND r.preset_id = ?").get(post.id, p.id) as { asset_id: string; source_asset_id: string; mime: string } | undefined;
     if (!row || !SHA_RE.test(row.asset_id)) throw new RenditionError(`No rendition yet for ${p.label} — make it first.`);
+    if (row.source_asset_id !== post.assetId) throw new RenditionError(`${p.label} was made from an earlier version of this image — make it again.`);
     entries.push({ name: `${p.id}.jpg`, data: readStored(imagesDir, row.asset_id, row.mime) });
   }
   entries.push({ name: "captions.txt", data: Buffer.from(captionsTextFor(db, post.id, presets), "utf8") });

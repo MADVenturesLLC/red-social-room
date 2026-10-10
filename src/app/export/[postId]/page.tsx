@@ -19,7 +19,7 @@ export default async function ExportPage({ params }: { params: Promise<{ postId:
       <p className="muted">Every image here is made at its platform’s exact pixel size (smart crop to start; drag the frame if the subject sits elsewhere). “AI extend” widens with Nano Banana 2 — one paid edit — and lands back on the same exact size. The ZIP carries one image per platform plus a captions.txt.</p>
       <ExportClient
         post={{ id: post.id, prompt: post.prompt, assetId: post.assetId, srcWidth: post.width, srcHeight: post.height }}
-        renditions={listRenditions(app.db, post.id).map((r) => ({ presetId: r.presetId, platform: r.platform, label: r.label, width: r.width, height: r.height, assetId: r.assetId, bytes: r.bytes, method: r.method, createdAt: r.createdAt, upscaledFrom: r.upscaledFrom, note: r.note, ratioNote: r.ratioNote, safeZone: r.safeZone }))}
+        renditions={listRenditions(app.db, post.id).map((r) => ({ presetId: r.presetId, platform: r.platform, label: r.label, width: r.width, height: r.height, assetId: r.assetId, bytes: r.bytes, method: r.method, createdAt: r.createdAt, upscaledFrom: r.upscaledFrom, note: r.note, ratioNote: r.ratioNote, safeZone: r.safeZone, stale: r.stale }))}
         presets={loadSizes().map((p) => ({ id: p.id, platform: p.platform, label: p.label, width: p.width, height: p.height, ratio: p.ratio, safeZone: p.safeZone, maxBytes: p.maxBytes }))}
         fallback={app.switches.outpaintFallback}
       />

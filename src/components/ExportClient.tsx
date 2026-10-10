@@ -8,7 +8,7 @@ import { postJson } from "./post.ts";
 import { frameFor } from "../lib/crop-frame.ts";
 
 interface Preset { id: string; platform: string; label: string; width: number; height: number; ratio: string; safeZone: { x: number; y: number; w: number; h: number } | null; maxBytes: number | null }
-interface Rendition { presetId: string; platform: string; label: string; width: number; height: number; assetId: string; bytes: number; method: string; createdAt: string; upscaledFrom: number | null; note: string | null; ratioNote: string | null; safeZone: { x: number; y: number; w: number; h: number } | null }
+interface Rendition { presetId: string; platform: string; label: string; width: number; height: number; assetId: string; bytes: number; method: string; createdAt: string; upscaledFrom: number | null; note: string | null; ratioNote: string | null; safeZone: { x: number; y: number; w: number; h: number } | null; stale: boolean }
 
 export interface ExportClientProps {
   post: { id: number; prompt: string; assetId: string; srcWidth: number; srcHeight: number };
@@ -22,7 +22,7 @@ const kb = (n: number) => `${Math.round(n / 1024)} KB`;
 export default function ExportClient({ post, renditions: rend0, presets, fallback }: ExportClientProps) {
   const [rend, setRend] = useState<Record<string, Rendition>>(() => Object.fromEntries(rend0.map((r) => [r.presetId, r])));
   const [ticked, setTicked] = useState<Set<string>>(new Set());
-  const [exportTicked, setExportTicked] = useState<Set<string>>(() => new Set(rend0.map((r) => r.presetId)));
+  const [exportTicked, setExportTicked] = useState<Set<string>>(() => new Set(rend0.filter((r) => !r.stale).map((r) => r.presetId)));
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -125,6 +125,19 @@ export default function ExportClient({ post, renditions: rend0, presets, fallbac
     setCropCy(Math.min(1, Math.max(0, d.cy + (e.clientY - d.y) / h)));
   };
   const onFramePointerUp = () => { dragRef.current = null; };
+  // Review finding 2: the crop frame is keyboard-operable (arrows move it; Shift moves faster) and there
+  // are visible nudge buttons, so a pointer is not the only way to adjust the crop.
+  const nudge = (dx: number, dy: number) => {
+    setCropCx((v) => Math.min(1, Math.max(0, v + dx)));
+    setCropCy((v) => Math.min(1, Math.max(0, v + dy)));
+  };
+  const onFrameKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.shiftKey ? 0.05 : 0.01;
+    if (e.key === "ArrowLeft") { nudge(-step, 0); e.preventDefault(); }
+    else if (e.key === "ArrowRight") { nudge(step, 0); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { nudge(0, -step); e.preventDefault(); }
+    else if (e.key === "ArrowDown") { nudge(0, step); e.preventDefault(); }
+  };
 
   const cropPreset = cropOpen ? presets.find((p) => p.id === cropOpen) : undefined;
   const frame = cropPreset ? frameFor(cropPreset.width, cropPreset.height, post.srcWidth, post.srcHeight, cropCx, cropCy, cropScale) : null;
@@ -144,6 +157,7 @@ export default function ExportClient({ post, renditions: rend0, presets, fallbac
                 <img src={`/api/assets/${r.assetId}`} alt={p.label} />
                 {r.safeZone ? <div className="safe" style={{ left: `${(r.safeZone.x / r.width) * 100}%`, top: `${(r.safeZone.y / r.height) * 100}%`, width: `${(r.safeZone.w / r.width) * 100}%`, height: `${(r.safeZone.h / r.height) * 100}%` }} /> : null}
               </div>
+              {r.stale ? <p className="error mini">Made from an earlier version of this image — make it again before exporting.</p> : null}
               {r.ratioNote ? <p className="muted mini">source {r.ratioNote}</p> : null}
               <div className="ctl-row">
                 {cropOpen === p.id
@@ -160,10 +174,21 @@ export default function ExportClient({ post, renditions: rend0, presets, fallbac
                     <div
                       className="frame"
                       style={{ left: `${frame.x * 100}%`, top: `${frame.y * 100}%`, width: `${frame.w * 100}%`, height: `${frame.h * 100}%` }}
+                      tabIndex={0}
+                      role="application"
+                      aria-label={`Crop frame for ${p.label} — drag it, or focus it and use the arrow keys`}
                       onPointerDown={onFramePointerDown}
                       onPointerMove={onFramePointerMove}
                       onPointerUp={onFramePointerUp}
+                      onKeyDown={onFrameKeyDown}
                     />
+                  </div>
+                  <div className="ctl-row">
+                    <span className="muted mini">Move</span>
+                    <button type="button" className="chip" aria-label="Move the crop left" onClick={() => nudge(-0.01, 0)}>←</button>
+                    <button type="button" className="chip" aria-label="Move the crop up" onClick={() => nudge(0, -0.01)}>↑</button>
+                    <button type="button" className="chip" aria-label="Move the crop down" onClick={() => nudge(0, 0.01)}>↓</button>
+                    <button type="button" className="chip" aria-label="Move the crop right" onClick={() => nudge(0.01, 0)}>→</button>
                   </div>
                   <div className="ctl-row">
                     <label htmlFor={`zoom-${p.id}`}>Zoom</label>
