@@ -125,3 +125,82 @@ export function ConsoleForm(props: { monthNY: string }) {
     </form>
   );
 }
+
+/** A7 (FD:6): the R2 backup target. Endpoint and bucket are shown back; the two keys stay server-side. */
+export function R2Form(props: { configured: boolean; endpoint: string | null; bucket: string | null; keyLast4: string | null }) {
+  const [endpoint, setEndpoint] = useState(props.endpoint ?? "");
+  const [bucket, setBucket] = useState(props.bucket ?? "");
+  const [accessKeyId, setAccessKeyId] = useState("");
+  const [secret, setSecret] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    const r = await postJson<{ r2?: { configured: boolean; keyLast4: string | null }; error?: string }>("/api/settings/r2", { endpoint, bucket, accessKeyId, secretAccessKey: secret });
+    setAccessKeyId(""); setSecret("");
+    setBusy(false);
+    setMsg(r.ok && r.data?.r2 ? `Saved. Backup target is set${r.data.r2.keyLast4 ? ` (key ending ${r.data.r2.keyLast4})` : ""}.` : (r.data?.error ?? `Not saved (HTTP ${r.status}).`));
+  }
+  return (
+    <form onSubmit={save}>
+      <div className="row">
+        <label htmlFor="r2-endpoint">Endpoint</label>
+        <input id="r2-endpoint" value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://<account id>.r2.cloudflarestorage.com" spellCheck={false} />
+      </div>
+      <div className="row">
+        <label htmlFor="r2-bucket">Bucket</label>
+        <input id="r2-bucket" value={bucket} onChange={(e) => setBucket(e.target.value)} placeholder="rsr-backup" spellCheck={false} />
+      </div>
+      <div className="row">
+        <label htmlFor="r2-keyid">Access key id{props.keyLast4 ? ` (saved, ends ${props.keyLast4} — leave blank to keep it)` : ""}</label>
+        <input id="r2-keyid" type="password" autoComplete="off" spellCheck={false} value={accessKeyId} onChange={(e) => setAccessKeyId(e.target.value)} />
+      </div>
+      <div className="row">
+        <label htmlFor="r2-secret">Secret access key{props.configured ? " (leave blank to keep it)" : ""}</label>
+        <input id="r2-secret" type="password" autoComplete="off" spellCheck={false} value={secret} onChange={(e) => setSecret(e.target.value)} />
+      </div>
+      <div className="row">
+        <button type="submit" disabled={busy || !endpoint.trim() || !bucket.trim()}>Save backup target</button>
+        {msg ? <span className="muted">{msg}</span> : null}
+      </div>
+    </form>
+  );
+}
+
+/** A7: run the nightly backup job right now. */
+export function BackupNowButton() {
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function run() {
+    setBusy(true);
+    const r = await postJson<{ ok?: boolean; filesUploaded?: number; bytesUploaded?: number; error?: string }>("/api/backup/run", {});
+    setBusy(false);
+    setMsg(r.data?.ok
+      ? `Backed up: ${r.data.filesUploaded} new file(s), ${(((r.data.bytesUploaded ?? 0) + (0)) / 1e6).toFixed(1)} MB of files. Reload to see the times.`
+      : (r.data?.error ?? `Backup failed (HTTP ${r.status}).`));
+  }
+  return <div className="row"><button onClick={() => void run()} disabled={busy}>{busy ? "Backing up…" : "Back up now"}</button>{msg ? <span className="muted">{msg}</span> : null}</div>;
+}
+
+/** A7 (F17): the manual search-index actions. */
+export function FtsTools() {
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function run(action: "check" | "rebuild") {
+    setBusy(true);
+    const r = await postJson<{ report?: { posts: number; indexed: number; integrityOk: boolean; rebuilt: boolean; detail: string }; error?: string }>("/api/maintenance/fts", { action });
+    setBusy(false);
+    if (r.ok && r.data?.report) {
+      const rep = r.data.report;
+      setMsg(`posts ${rep.posts}, indexed ${rep.indexed}, integrity ${rep.integrityOk ? "ok" : "FAILED"}${rep.rebuilt ? "; the index was rebuilt" : ""}.`);
+    } else setMsg(r.data?.error ?? `HTTP ${r.status}`);
+  }
+  return (
+    <div className="row">
+      <button className="secondary" disabled={busy} onClick={() => void run("check")}>Check search index</button>
+      <button className="secondary" disabled={busy} onClick={() => void run("rebuild")}>Rebuild search index</button>
+      {msg ? <span className="muted">{msg}</span> : null}
+    </div>
+  );
+}

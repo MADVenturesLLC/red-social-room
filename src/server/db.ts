@@ -243,6 +243,46 @@ CREATE VIEW IF NOT EXISTS spend_by_month AS
   SELECT month_ny, SUM(counted_micro_usd) AS counted_micro_usd FROM spend_counted GROUP BY month_ny;
 CREATE VIEW IF NOT EXISTS spend_by_month_provider AS
   SELECT month_ny, provider, SUM(counted_micro_usd) AS counted_micro_usd FROM spend_counted GROUP BY month_ny, provider;
+
+-- A7 (FD:6 + F23): one row per nightly backup attempt; the red banner shows when the last ok row is
+-- older than 48 h (or there is none). Rows are never edited after completion.
+CREATE TABLE IF NOT EXISTS backups (
+  id INTEGER PRIMARY KEY,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  ok INTEGER,                                           -- NULL while running; 1 = finished; 0 = failed
+  error TEXT,
+  files_uploaded INTEGER NOT NULL DEFAULT 0,
+  files_total INTEGER NOT NULL DEFAULT 0,
+  bytes_uploaded INTEGER NOT NULL DEFAULT 0,
+  db_bytes INTEGER,
+  db_sha256 TEXT,
+  manifest_key TEXT
+);
+
+-- A7: every asset file already pushed to R2, so each night uploads only what is new (the store is
+-- content-addressed and append-only, so a file never changes under its name).
+CREATE TABLE IF NOT EXISTS backup_files (
+  rel TEXT PRIMARY KEY,                                 -- images/<xx>/<sha256>.<ext>
+  bytes INTEGER NOT NULL,
+  uploaded_at TEXT NOT NULL
+);
+
+-- A7 (F17): the nightly search-index check and any manual rebuild, newest first in Settings.
+CREATE TABLE IF NOT EXISTS maintenance_log (
+  id INTEGER PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,                                   -- fts_check | fts_rebuild | backup_skip
+  detail TEXT NOT NULL                                  -- JSON
+);
+
+-- A7 (T:76 "saved snippets"): style phrases saved from the prompt box and re-inserted with one click.
+CREATE TABLE IF NOT EXISTS snippets (
+  id INTEGER PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  text TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS snippets_text ON snippets(text);
 `;
 
 export const SPIKE_LEDGER_PATH = join(REPO_ROOT, "spike-results", "ledger.json");

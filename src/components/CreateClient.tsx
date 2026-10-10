@@ -9,6 +9,7 @@ import EditPanel, { type EditSource } from "./EditPanel.tsx";
 import { precheckUpload, resizeDimensions } from "../lib/upload-rules.ts";
 import type { JobView, RunView } from "../server/runs.ts";
 import type { CreatorStatus } from "../server/status.ts";
+import type { ReuseData, Snippet } from "../server/library.ts";
 
 const usd = (micros: number) => `$${(micros / 1e6).toFixed(2)}`;
 
@@ -33,12 +34,16 @@ async function shrinkTo(f: Blob, w: number, h: number): Promise<Blob> {
   return await new Promise<Blob>((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error("resize failed"))), "image/png"));
 }
 
-export default function CreateClient(props: { ratios: readonly string[]; creators: CreatorStatus[]; warn: boolean; totalsText: string }) {
-  const [prompt, setPrompt] = useState("");
-  const [ratio, setRatio] = useState(props.ratios[0] ?? "4:5");
+export default function CreateClient(props: { ratios: readonly string[]; creators: CreatorStatus[]; warn: boolean; totalsText: string; prefill: ReuseData | null; recent: readonly string[]; snippets: readonly Snippet[] }) {
+  const prefill = props.prefill;
+  const [prompt, setPrompt] = useState(prefill?.prompt ?? "");
+  const [ratio, setRatio] = useState(() => (prefill && props.ratios.includes(prefill.ratio) ? prefill.ratio : (props.ratios[0] ?? "4:5")));
   const [selected, setSelected] = useState<Record<string, boolean>>(() =>
-    // FD:11: Nano Banana 2 is the default Google creator; the Pro card starts unticked.
-    Object.fromEntries(props.creators.map((c) => [c.id, c.id !== "google-pro" && (c.state === "ready" || c.state === "key_unchecked")])));
+    // A7 reuse-run: only the model that made the original starts ticked (when it still exists).
+    prefill
+      ? Object.fromEntries(props.creators.map((c) => [c.id, c.id === prefill.creator]))
+      // FD:11: Nano Banana 2 is the default Google creator; the Pro card starts unticked.
+      : Object.fromEntries(props.creators.map((c) => [c.id, c.id !== "google-pro" && (c.state === "ready" || c.state === "key_unchecked")])));
   const [counts, setCounts] = useState<Record<string, number>>(() => Object.fromEntries(props.creators.map((c) => [c.id, 1])));
   const [busy, setBusy] = useState(false);
   const [run, setRun] = useState<RunView | null>(null);
@@ -49,6 +54,9 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   const [editSource, setEditSource] = useState<EditSource | null>(null);
   const [editMode, setEditMode] = useState<"edit" | "reference">("edit");
+  // A7 (T:76): the saved snippets, newest first; the recent prompts come from the server on load.
+  const [snippetList, setSnippetList] = useState<Snippet[]>([...props.snippets]);
+  const [snipMsg, setSnipMsg] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -106,6 +114,21 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
   async function save(job: JobView) {
     const r = await postJson<{ already?: boolean; error?: string }>("/api/library", { generationId: job.generationId, notes: notes[job.jobId] ?? "" });
     setSaved((s) => ({ ...s, [job.jobId]: r.ok ? (r.data?.already ? "Already in the library." : "Saved to library.") : (r.data?.error ?? `Save failed (HTTP ${r.status}).`) }));
+  }
+
+  /** A7 (T:76): save the current prompt as a snippet, or remove one. */
+  async function saveSnippet() {
+    const r = await postJson<{ snippet?: Snippet; error?: string }>("/api/snippets", { text: prompt });
+    if (r.ok && r.data?.snippet) {
+      const snip = r.data.snippet;
+      setSnippetList((l) => (l.some((x) => x.id === snip.id) ? l : [snip, ...l]));
+      setSnipMsg("Snippet saved.");
+    } else setSnipMsg(r.data?.error ?? `Not saved (HTTP ${r.status}).`);
+  }
+  async function removeSnippet(id: number) {
+    const res = await fetch(`/api/snippets?id=${id}`, { method: "DELETE", headers: { "Content-Type": "application/json", "x-rsr": "1" } });
+    if (res.ok) setSnippetList((l) => l.filter((x) => x.id !== id));
+    else setSnipMsg(`Not removed (HTTP ${res.status}).`);
   }
 
   /** F14 in the browser: type/size/dimension check, the downscale offer, then the upload. The server re-checks all of it. */
@@ -171,8 +194,30 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
         ))}
       </div>
 
+      {prefill ? <p className="muted" data-reuse>Reusing post #{prefill.postId} — prompt and model are filled in.</p> : null}
+      {props.recent.length > 0 ? (
+        <div className="row" data-recent>
+          <span className="muted">Recent:</span>
+          {props.recent.map((q) => <button type="button" key={q} className="secondary" onClick={() => setPrompt(q)}>{q.length > 40 ? `${q.slice(0, 40)}…` : q}</button>)}
+        </div>
+      ) : null}
+      {snippetList.length > 0 ? (
+        <div className="row" data-snippets>
+          <span className="muted">Snippets:</span>
+          {snippetList.map((sn) => (
+            <span key={sn.id} className="row" data-snippet={sn.id}>
+              <button type="button" className="secondary" onClick={() => setPrompt(sn.text)}>{sn.text.length > 40 ? `${sn.text.slice(0, 40)}…` : sn.text}</button>
+              <button type="button" className="secondary" onClick={() => void removeSnippet(sn.id)} aria-label={`Remove snippet ${sn.id}`}>×</button>
+            </span>
+          ))}
+        </div>
+      ) : null}
       <label htmlFor="prompt">Prompt</label>
       <textarea id="prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={64000} />
+      <div className="row">
+        <button type="button" className="secondary" onClick={() => void saveSnippet()} disabled={!prompt.trim()}>Save as snippet</button>
+        {snipMsg ? <span className="muted">{snipMsg}</span> : null}
+      </div>
       <div className="row">
         <label htmlFor="ratio">Aspect ratio</label>
         <select id="ratio" value={ratio} onChange={(e) => setRatio(e.target.value)}>

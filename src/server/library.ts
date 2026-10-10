@@ -1,4 +1,7 @@
 // Save to library + search by prompt text (TECH-PLAN-v1.md section 9 A1, :77, :103).
+// A7 adds: search by tag (?tag=), the tag list with counts, per-post reuse data, and post deletion
+// (housekeeping — post rows and their captions/tags/renditions go; the content-addressed files stay,
+// because they are shared by other posts once anything references them).
 import { isoNY } from "../../spike/lib/ledger.ts";
 import type { DB } from "./db.ts";
 
@@ -28,10 +31,92 @@ export function ftsQuery(q: string): string | null {
   return words.slice(0, 12).map((w) => `"${w}"*`).join(" AND ");
 }
 
-export function searchPosts(db: DB, q: unknown, limit = 60): PostRow[] {
+/** A5/A7: tag suggestions live in `tags`; a post's ticks live in `post_tags`. */
+export function listTags(db: DB, limit = 40): Array<{ name: string; count: number }> {
+  return db.prepare("SELECT t.name AS name, count(pt.post_id) AS count FROM tags t LEFT JOIN post_tags pt ON pt.tag_id = t.id GROUP BY t.id ORDER BY count DESC, t.name LIMIT ?").all(limit) as unknown as Array<{ name: string; count: number }>;
+}
+
+export function searchPosts(db: DB, q: unknown, tag: unknown = null, limit = 60): PostRow[] {
   const text = typeof q === "string" ? q.slice(0, 200) : "";
+  const tagName = typeof tag === "string" ? tag.slice(0, 80) : "";
   const fq = ftsQuery(text);
   const cols = "p.id, p.created_at, p.generation_id, p.asset_id, p.prompt, p.model, p.notes, a.width, a.height, (p.recipe IS NOT NULL) AS designed";
-  if (!fq) return db.prepare(`SELECT ${cols} FROM posts p JOIN assets a ON a.id = p.asset_id ORDER BY p.id DESC LIMIT ?`).all(limit) as unknown as PostRow[];
+  const byTag = "p.id IN (SELECT pt.post_id FROM post_tags pt JOIN tags t ON t.id = pt.tag_id WHERE t.name = ?)";
+  if (!fq) {
+    if (tagName) return db.prepare(`SELECT ${cols} FROM posts p JOIN assets a ON a.id = p.asset_id WHERE ${byTag} ORDER BY p.id DESC LIMIT ?`).all(tagName, limit) as unknown as PostRow[];
+    return db.prepare(`SELECT ${cols} FROM posts p JOIN assets a ON a.id = p.asset_id ORDER BY p.id DESC LIMIT ?`).all(limit) as unknown as PostRow[];
+  }
+  if (tagName) return db.prepare(`SELECT ${cols} FROM posts_fts f JOIN posts p ON p.id = f.rowid JOIN assets a ON a.id = p.asset_id WHERE posts_fts MATCH ? AND ${byTag} ORDER BY bm25(posts_fts), p.id DESC LIMIT ?`).all(fq, tagName, limit) as unknown as PostRow[];
   return db.prepare(`SELECT ${cols} FROM posts_fts f JOIN posts p ON p.id = f.rowid JOIN assets a ON a.id = p.asset_id WHERE posts_fts MATCH ? ORDER BY bm25(posts_fts), p.id DESC LIMIT ?`).all(fq, limit) as unknown as PostRow[];
+}
+
+export interface ReuseData { postId: number; prompt: string; ratio: string; creator: string }
+export interface Snippet { id: number; text: string; created_at: string }
+
+/**
+ * A7 "reuse-run": everything the create box needs to start again from one library post. Older posts were
+ * made before the run queue existed (the A1 route writes a generations row but no jobs row), so both joins
+ * are LEFT joins: the ratio falls back to the generation's own params and the creator to its provider.
+ */
+export function reuseData(db: DB, postId: unknown): ReuseData | null {
+  const id = Number(postId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const row = db.prepare(`SELECT p.id AS post_id, p.prompt AS prompt, p.model AS model,
+      j.ratio AS j_ratio, j.creator_id AS j_creator, g.provider AS g_provider, g.params AS g_params
+    FROM posts p
+    LEFT JOIN jobs j ON j.generation_id = p.generation_id
+    LEFT JOIN generations g ON g.id = p.generation_id
+    WHERE p.id = ?`).get(id) as { post_id: number; prompt: string; model: string; j_ratio: string | null; j_creator: string | null; g_provider: string | null; g_params: string | null } | undefined;
+  if (!row) return null;
+  let ratio = row.j_ratio;
+  if (!ratio && row.g_params) {
+    try {
+      const p = JSON.parse(row.g_params) as { requested_ratio?: unknown; sent_ratio?: unknown };
+      const r = typeof p.requested_ratio === "string" ? p.requested_ratio : (typeof p.sent_ratio === "string" ? p.sent_ratio : null);
+      ratio = r;
+    } catch { /* leave null */ }
+  }
+  const creator = row.j_creator ?? (row.g_provider === "google" ? (/pro/i.test(row.model) ? "google-pro" : "google") : "xai");
+  return { postId: Number(row.post_id), prompt: String(row.prompt), ratio: ratio ?? "4:5", creator };
+}
+
+/** A7: the last few distinct prompts (newest first) for the chips under the prompt box (T:76). */
+export function recentPrompts(db: DB, limit = 5): string[] {
+  const rows = db.prepare("SELECT prompt, MAX(rowid) AS last FROM generations WHERE trim(prompt) <> '' GROUP BY prompt ORDER BY last DESC LIMIT ?").all(limit) as unknown as Array<{ prompt: string }>;
+  return rows.map((r) => r.prompt);
+}
+
+export function listSnippets(db: DB, limit = 50): Snippet[] {
+  // Plain objects on purpose: node:sqlite rows have a null prototype, and React refuses to pass those
+  // from a server component to a client component (the create page hits this at render time).
+  const rows = db.prepare("SELECT id, text, created_at FROM snippets ORDER BY id DESC LIMIT ?").all(limit) as unknown as Snippet[];
+  return rows.map((r) => ({ id: Number(r.id), text: String(r.text), created_at: String(r.created_at) }));
+}
+
+export function addSnippet(db: DB, text: unknown): Snippet {
+  const t = typeof text === "string" ? text.trim() : "";
+  if (!t) throw new LibraryError("Type the snippet first.");
+  if (t.length > 2000) throw new LibraryError("Snippets are limited to 2,000 characters.");
+  db.prepare("INSERT OR IGNORE INTO snippets (created_at, text) VALUES (?, ?)").run(isoNY(), t);
+  const row = db.prepare("SELECT id, text, created_at FROM snippets WHERE text = ?").get(t) as unknown as Snippet;
+  return { id: Number(row.id), text: String(row.text), created_at: String(row.created_at) };
+}
+
+export function deleteSnippet(db: DB, id: unknown): boolean {
+  const n = Number(id);
+  if (!Number.isInteger(n) || n <= 0) throw new LibraryError("Unknown snippet.");
+  return db.prepare("DELETE FROM snippets WHERE id = ?").run(n).changes > 0;
+}
+
+/** A7 housekeeping: remove a post and its captions/tags/renditions. The files themselves stay. */
+export function deletePost(db: DB, id: unknown): boolean {
+  const n = Number(id);
+  if (!Number.isInteger(n) || n <= 0) throw new LibraryError("Unknown post.");
+  const exists = db.prepare("SELECT id FROM posts WHERE id = ?").get(n) as { id: number } | undefined;
+  if (!exists) return false;
+  db.prepare("DELETE FROM captions WHERE post_id = ?").run(n);
+  db.prepare("DELETE FROM post_tags WHERE post_id = ?").run(n);
+  db.prepare("DELETE FROM renditions WHERE post_id = ?").run(n);
+  db.prepare("DELETE FROM posts WHERE id = ?").run(n);
+  return true;
 }
