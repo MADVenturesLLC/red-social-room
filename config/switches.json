@@ -4,5 +4,6 @@
   "xaiRejectionCost": "spike_narrow_422",
   "xaiDataRetention": "default_30_days",
   "xaiQuality": "measured_defaults",
-  "finalResolution": "1k_upscale"
+  "finalResolution": "1k_upscale",
+  "outpaintFallback": "none"
 }

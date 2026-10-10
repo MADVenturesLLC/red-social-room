@@ -144,7 +144,7 @@ export async function executeGeneration(d: AppDeps, input: GenExecInput): Promis
   }
 }
 
-export interface EditExecInput { runId: string; provider: ProviderId; model: string; instruction: string; sourceAssetId: string; generationId: string }
+export interface EditExecInput { runId: string; provider: ProviderId; model: string; instruction: string; sourceAssetId: string; generationId: string; /** A6 item 9: only the widen path sets this; it rides as response_format.aspect_ratio (Google only, D3). */ aspectRatio?: string | null }
 
 /** Run one edit (A3): source image in, a new child out. The original and every earlier version stay untouched. */
 export async function executeEdit(d: AppDeps, input: EditExecInput): Promise<GenerateView> {
@@ -155,7 +155,7 @@ export async function executeEdit(d: AppDeps, input: EditExecInput): Promise<Gen
   const src = loadSourceAsset(d, input.sourceAssetId);
   const out: XaiOutcome | GoogleOutcome = input.provider === "xai"
     ? await xaiEdit(d, { instruction: input.instruction, image: src.image, mime: src.mime, generationId: input.generationId })
-    : await googleEdit(googleDepsOf(d), { instruction: input.instruction, image: src.image, mime: src.mime, generationId: input.generationId, model: input.model });
+    : await googleEdit(googleDepsOf(d), { instruction: input.instruction, image: src.image, mime: src.mime, generationId: input.generationId, model: input.model, aspectRatio: input.aspectRatio ?? null });
   view.costText = costText(out.cost);
   view.ref = out.clientRequestId;
 

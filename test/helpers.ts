@@ -15,7 +15,7 @@ import type { FetchLike } from "../src/server/xai/http.ts";
 // xAI or Google key formats, so no secret scanner mistakes them for real keys. Never real secrets.
 export const DUMMY_KEY = "dummy_TESTONLY_eSnzAkRvEBmAqdNAlxMozDnpKNBHvF2RdMB6EiqvXdJL5QU20qMu2PHKgSdR";
 export const DUMMY_GOOGLE_KEY = "dummy_TESTONLY_gGLXkQzWvRtYbNmHpCsDfJaEeUuIiOoPpAaSsDdFfGgHhJjKk";
-export const DEFAULT_SWITCHES = { promptCheck: { method: "name_list", onFailure: "block", override: "none" }, xaiRejectionCost: "spike_narrow_422", xaiDataRetention: "default_30_days", xaiQuality: "measured_defaults", finalResolution: "1k_upscale" };
+export const DEFAULT_SWITCHES = { promptCheck: { method: "name_list", onFailure: "block", override: "none" }, xaiRejectionCost: "spike_narrow_422", xaiDataRetention: "default_30_days", xaiQuality: "measured_defaults", finalResolution: "1k_upscale", outpaintFallback: "none" };
 
 let jpegCache: Buffer | null = null;
 /** A real 864x1152 JPEG (xAI's 3:4 1K size, Amendment 1 item 1). */

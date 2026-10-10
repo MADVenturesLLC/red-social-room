@@ -490,10 +490,11 @@ export async function generate(d: GoogleDeps, req: GoogleGenerateReq): Promise<G
 
 // ---- edit (A3) ----
 
-export interface GoogleEditReq { instruction: string; image: Buffer; mime: string | null; generationId: string; model?: string }
+export interface GoogleEditReq { instruction: string; image: Buffer; mime: string | null; generationId: string; model?: string; /** A6 item 9 (widen): the target ratio rides as response_format.aspect_ratio; null keeps the source ratio. */ aspectRatio?: string | null }
 
 /** Edit by description: the source image rides inline in `input` ([text, image], spike-results/gemini/
- *  02-edit-background-red.json). No aspect_ratio is sent: the edit keeps the source ratio. */
+ *  02-edit-background-red.json). Without an aspectRatio the edit keeps the source ratio; the widen path
+ *  (item 9) sends the target ratio (spike-results/gemini/03-edit-aspect-16x9.json). */
 export async function edit(d: GoogleDeps, req: GoogleEditReq): Promise<GoogleOutcome> {
   const instruction = req.instruction.trim();
   if (!instruction) return { kind: "error", code: "bad_input", message: "Type an instruction first.", clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
@@ -510,7 +511,7 @@ export async function edit(d: GoogleDeps, req: GoogleEditReq): Promise<GoogleOut
   const body: Record<string, unknown> = {
     model,
     input: [{ type: "text", text: instruction }, { type: "image", mime_type: req.mime ?? "image/jpeg", data: req.image.toString("base64") }],
-    response_format: { type: "image", image_size: "1K" },
+    response_format: { type: "image", ...(req.aspectRatio ? { aspect_ratio: req.aspectRatio } : {}), image_size: "1K" },
     store: false,
   };
 

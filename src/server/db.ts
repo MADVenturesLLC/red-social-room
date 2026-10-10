@@ -116,6 +116,17 @@ CREATE TABLE IF NOT EXISTS captions (
   UNIQUE(post_id, platform)
 );
 
+-- A6: per-platform renditions (T:78): exact-size files for export; UNIQUE(post, preset) so re-making replaces.
+CREATE TABLE IF NOT EXISTS renditions (
+  id INTEGER PRIMARY KEY,
+  post_id INTEGER NOT NULL REFERENCES posts(id),
+  preset_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL REFERENCES assets(id),
+  method TEXT NOT NULL CHECK (method IN ('crop','ai_extend','ai_rerender','local_outpaint','recraft_outpaint')),
+  created_at TEXT NOT NULL,
+  UNIQUE(post_id, preset_id)
+);
+
 -- A5: tags (T:78/T:103): suggested by the caption model, added only when the user ticks them.
 CREATE TABLE IF NOT EXISTS tags (
   id INTEGER PRIMARY KEY,

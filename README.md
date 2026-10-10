@@ -1,6 +1,6 @@
 # MADVentures Red Social Room
 
-Act 0 spike (see `spike-results/REPORT.md`), the A1 app, the A2 additions, the A3 edits/lineage additions, the A4 editor and the A5 captions (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
+Act 0 spike (see `spike-results/REPORT.md`), the A1 app, the A2 additions, the A3 edits/lineage additions, the A4 editor, the A5 captions and the A6 export (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
 
 ## Requirements
 
@@ -104,6 +104,17 @@ A5 (TECH-PLAN-v1.md :214-216, section 6) writes captions from the final image wi
 - **Tones** (`config/tones.json`): MAD Ventures confident / casual / educational / playful. **Brand voice**: write it once on the captions page; it rides with every call.
 - **Suggested tags**: come back with the captions; only the ones you tick are added. Captions and tags are searchable in the Library (the FTS index covers prompt, notes, model, captions and tags; older databases rebuild automatically at start).
 - **Failure behavior**: the same real-person check runs on the free text before anything is sent (a block sends nothing, records no money); an unreadable reply is reported plainly, still billed, and never retried automatically (a chosen default — press the button again for a new call); rate limits follow the same bounded rule as the image calls.
+
+### A6: platform sizing + export
+
+A6 (TECH-PLAN-v1.md :218-220, sections 5-6; amendment items 9, 10, 24) turns one finished image into per-platform files:
+
+- **Every Library image gets an Export link** (`/export/<post>`). Tick placements from the presets JSON (`config/sizes.json` — thirteen entries: Instagram square/portrait/Story, X, LinkedIn square/landscape/vertical, Facebook square/portrait/Story, TikTok, Pinterest, YouTube, each with exact pixels, ratio, quality, the YouTube 2 MB limit and the Story safe zone) and "Make renditions".
+- **The exact-size step (item 24)**: every rendition and export is `sharp resize(w, h, {fit:"cover", position: attention})` to the preset's exact pixels — 928×1152 becomes exactly 1080×1350; 1376×768 becomes exactly 1280×720; the YouTube file stays under 2 MB. Original files are never altered (hash-checked in the tests). When the source ratio is more than 1% off the asked one, the tile shows "asked 9:16, got 928×1152 = 0.806" in grey.
+- **Smart crop, then drag**: attention picks the subject; "Adjust crop" drags an aspect-locked frame and re-renders the same exact pixels. A rendition made from a smaller source says "Upscaled from N px wide" (item 10 / P5 default A).
+- **Safe zone**: the Instagram Story preview draws the 1080×1610 safe-zone box.
+- **AI extend (Nano Banana 2)** (D3, item 9): when a crop would cut the subject, one paid Google edit widens to the platform's ratio (`response_format.aspect_ratio` + the image inline), stored with method `ai_extend` and put through the same exact-size step. Grok is never used for widening. A refusal shows Google's real text; the fallback slot follows the `outpaintFallback` switch (**P3 still pending — interim default "none" says "No fallback on this computer yet. Crop instead?"**; ruling A/C adds a Recraft adapter later).
+- **Download ZIP**: one image per ticked platform plus a `captions.txt` built from the saved captions (hashtags and alt included; platforms without a caption say so). Missing renditions stop the export with the platform named.
 
 ### Run it locally (no Docker)
 

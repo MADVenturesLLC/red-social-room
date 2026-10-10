@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "_comment": "Export presets, TECH-PLAN-v1.md section 5 (read 2026-10-03). Every rendition and export goes through the item 24 exact-size step, so these pixel numbers are what the ZIP contains. YouTube carries the 2 MB limit.",
+  "presets": [
+    {
+      "id": "instagram-square",
+      "platform": "Instagram",
+      "label": "Instagram feed, square",
+      "width": 1080,
+      "height": 1080,
+      "ratio": "1:1",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "instagram-portrait",
+      "platform": "Instagram",
+      "label": "Instagram feed, portrait",
+      "width": 1080,
+      "height": 1350,
+      "ratio": "4:5",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "instagram-story",
+      "platform": "Instagram",
+      "label": "Instagram Story",
+      "width": 1080,
+      "height": 1920,
+      "ratio": "9:16",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": {
+        "x": 0,
+        "y": 155,
+        "w": 1080,
+        "h": 1610
+      }
+    },
+    {
+      "id": "x",
+      "platform": "X",
+      "label": "X, landscape",
+      "width": 1280,
+      "height": 720,
+      "ratio": "16:9",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "linkedin-square",
+      "platform": "LinkedIn",
+      "label": "LinkedIn feed, square",
+      "width": 1200,
+      "height": 1200,
+      "ratio": "1:1",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "linkedin-landscape",
+      "platform": "LinkedIn",
+      "label": "LinkedIn feed, landscape",
+      "width": 1200,
+      "height": 627,
+      "ratio": "1.91:1",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "linkedin-portrait",
+      "platform": "LinkedIn",
+      "label": "LinkedIn feed, vertical",
+      "width": 1080,
+      "height": 1350,
+      "ratio": "4:5",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "facebook-square",
+      "platform": "Facebook",
+      "label": "Facebook feed, square",
+      "width": 1080,
+      "height": 1080,
+      "ratio": "1:1",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "facebook-portrait",
+      "platform": "Facebook",
+      "label": "Facebook feed, portrait",
+      "width": 1080,
+      "height": 1350,
+      "ratio": "4:5",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "facebook-story",
+      "platform": "Facebook",
+      "label": "Facebook Story",
+      "width": 1080,
+      "height": 1920,
+      "ratio": "9:16",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "tiktok",
+      "platform": "TikTok",
+      "label": "TikTok photo / carousel",
+      "width": 1080,
+      "height": 1920,
+      "ratio": "9:16",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "pinterest",
+      "platform": "Pinterest",
+      "label": "Pinterest Pin",
+      "width": 1000,
+      "height": 1500,
+      "ratio": "2:3",
+      "quality": 90,
+      "maxBytes": null,
+      "safeZone": null
+    },
+    {
+      "id": "youtube",
+      "platform": "YouTube",
+      "label": "YouTube thumbnail",
+      "width": 1280,
+      "height": 720,
+      "ratio": "16:9",
+      "quality": 85,
+      "maxBytes": 2097152,
+      "safeZone": null
+    }
+  ]
+}
