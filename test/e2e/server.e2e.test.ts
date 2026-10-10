@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPO_ROOT } from "../../src/server/config.ts";
+import sharp from "sharp";
 import { DUMMY_KEY, sampleJpeg, secretNeedles } from "../helpers.ts";
 import { HOST_REFUSED_BODY } from "../../src/server/hosts.ts";
 import { NOT_WRITABLE_MESSAGE } from "../../src/server/writable.ts";
@@ -83,6 +84,11 @@ function childEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
   return { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "/tmp", NEXT_TELEMETRY_DISABLED: "1", ...extra };
 }
 
+/** A3: distinct fixture pixels per call, so chains and uploads do not collapse through content-addressing. */
+let editJpegPool: Buffer[] = [];
+let editIdx = 0;
+let uploadN = 0;
+
 async function record(what: string, res: Response): Promise<string> {
   const text = await res.text();
   const headers = [...res.headers.entries()].map(([k, v]) => `${k}: ${v}`).join("\n");
@@ -95,6 +101,7 @@ const post = (path: string, body: unknown, headers: Record<string, string> = { "
 
 before(async () => {
   const jpeg = await sampleJpeg();
+  editJpegPool = await Promise.all([0, 1, 2, 3, 4, 5, 6, 7].map((i) => sharp({ create: { width: 48, height: 48, channels: 3, background: { r: (40 + i * 25) % 256, g: 70, b: 140 } } }).jpeg().toBuffer()));
   mock = createServer((req, res) => {
     const entry = { path: req.url ?? "", auth: req.headers.authorization, googleAuth: typeof req.headers["x-goog-api-key"] === "string" ? req.headers["x-goog-api-key"] : undefined, body: "" };
     mockSeen.push(entry);
@@ -111,6 +118,12 @@ before(async () => {
         if (body.includes("sse-hold")) { sseSeen(); void sseGate.then(() => { res.setHeader("x-request-id", "req-e2e-sse"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 400000000 } })); }); return; }
         res.setHeader("x-request-id", "req-e2e");
         return res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: body.includes("medium-bill") ? 600000000 : 400000000 } }));
+      }
+      if (req.url === "/v1/images/edits" && req.method === "POST") {
+        if (body.includes("edit-503")) { res.statusCode = 503; return res.end("oops"); }
+        const out = editJpegPool[editIdx++ % editJpegPool.length]!;
+        res.setHeader("x-request-id", "req-e2e-edit");
+        return res.end(JSON.stringify({ data: [{ b64_json: out.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 700000000 } }));
       }
       if (req.url === "/v1beta/models/gemini-3.1-flash-image" && req.method === "GET") {
         return res.end(JSON.stringify({ name: "models/gemini-3.1-flash-image", version: "3.0", displayName: "Nano Banana 2" }));
@@ -504,12 +517,12 @@ test("A1 pin 19 (d), line 370 (Argus L1 and L3 on 0e2f1f4): starting the server 
 
 interface RunJobE2E { creator: string; status: string; generationId: string; view: { status: string; message: string | null; code: string | null; displayNote: string | null; costText: string | null; image: { assetId: string } | null } | null }
 /** Poll GET /api/run/<id> until the run is terminal (jobs finish in a worker, not in the POST). */
-async function runToCompletion(runId: string, ms = 60_000): Promise<{ status: string; jobs: RunJobE2E[] }> {
+async function runToCompletion(runId: string, ms = 60_000): Promise<{ status: string; mode: string; jobs: RunJobE2E[] }> {
   const t0 = Date.now();
   for (;;) {
     const r = await fetch(`${base}/api/run/${runId}`);
     assert.equal(r.status, 200);
-    const v = (await r.json()) as { status: string; jobs: RunJobE2E[] };
+    const v = (await r.json()) as { status: string; mode: string; jobs: RunJobE2E[] };
     if (v.status !== "running") return v;
     if (Date.now() - t0 > ms) throw new Error(`run did not finish: ${JSON.stringify(v)}`);
     await new Promise((res) => setTimeout(res, 250));
@@ -651,6 +664,113 @@ test("A2 cap: a $0.10 cap blocks the next call before it is sent", async () => {
   } finally {
     await record("POST /api/settings/cap (back to 50)", await post("/api/settings/cap", { usd: 50 }));
   }
+});
+
+// ---- A3: uploads, edits, lineage (F13/F14, item 28) ----
+
+async function uploadPng(width = 64, height = 64): Promise<{ assetId: string; bytes: Buffer }> {
+  const n = uploadN++;
+  const bytes = await sharp({ create: { width, height, channels: 3, background: { r: (31 + n * 29) % 256, g: 90, b: (211 - n * 13 + 256) % 256 } } }).png().toBuffer();
+  const up = JSON.parse(await record("POST /api/upload (A3)", await post("/api/upload", { data: bytes.toString("base64") }))) as { assetId?: string; mime?: string; error?: string };
+  assert.ok(up.assetId && /^[a-f0-9]{64}$/.test(up.assetId), JSON.stringify(up));
+  assert.equal(up.mime, "image/png");
+  return { assetId: up.assetId, bytes };
+}
+
+test("A3 F14 over HTTP: the upload route accepts a small PNG (served back byte-identical) and rejects a non-image and an over-8,000 px image with the reason; zero provider calls", async () => {
+  const calls = mockSeen.length;
+  const { assetId, bytes } = await uploadPng();
+  const served = await fetch(`${base}/api/assets/${assetId}`);
+  assert.equal(served.headers.get("content-type"), "image/png");
+  assert.equal(Buffer.from(await served.arrayBuffer()).toString("base64"), bytes.toString("base64"));
+  const bad = JSON.parse(await record("POST /api/upload (not an image)", await post("/api/upload", { data: Buffer.from("hello, not an image").toString("base64") }))) as { error?: string };
+  assert.match(bad.error ?? "", /not a PNG, JPEG or WebP/);
+  const wide = await sharp({ create: { width: 9000, height: 8, channels: 3, background: "#000" } }).png().toBuffer();
+  const big = JSON.parse(await record("POST /api/upload (9,000 px side)", await post("/api/upload", { data: wide.toString("base64") }))) as { error?: string };
+  assert.match(big.error ?? "", /larger than 8,000 px on a side/);
+  assert.equal(mockSeen.length, calls, "uploads never call a provider");
+});
+
+test("A3 acceptance over HTTP: upload, three chained edits, revert to version 1 - the original bytes never change", async () => {
+  const { assetId: v0, bytes } = await uploadPng();
+  const ids = [v0];
+  for (const ins of ["make the sky gold", "add a small blimp", "turn it into night"]) {
+    const started = JSON.parse(await record("POST /api/edit (chain)", await post("/api/edit", { mode: "edit", sourceAssetId: ids[ids.length - 1], instruction: ins, models: ["xai"] }))) as { runId: string; blocked: boolean };
+    assert.equal(started.blocked, false);
+    const v = await runToCompletion(started.runId);
+    assert.equal(v.status, "ok", JSON.stringify(v));
+    assert.equal(v.mode, "edit");
+    ids.push(v.jobs[0].view!.image!.assetId);
+  }
+  assert.equal(new Set(ids).size, 4, "every version is its own file");
+  const first = JSON.parse(mockSeen.filter((m) => m.path === "/v1/images/edits")[0].body) as { image: { url: string } };
+  assert.ok(first.image.url.startsWith("data:image/png;base64,"), "the edit carries the uploaded image inline, same mime");
+  const chain = JSON.parse(await record("GET /api/lineage (chain)", await fetch(`${base}/api/lineage?id=${ids[3]}`))) as { rootAssetId: string; nodes: Array<{ kind: string; assetId: string | null; instruction: string | null; costText: string | null; parentAssetId: string | null }> };
+  assert.equal(chain.rootAssetId, v0);
+  assert.equal(chain.nodes.length, 4);
+  assert.deepEqual(chain.nodes.map((n) => n.kind), ["source", "edit", "edit", "edit"]);
+  assert.deepEqual(chain.nodes.slice(1).map((n) => n.instruction), ["make the sky gold", "add a small blimp", "turn it into night"]);
+  assert.ok(chain.nodes.slice(1).every((n) => n.costText === "$0.07"), JSON.stringify(chain.nodes));
+  // Revert to version 1 (the original): it still serves byte-identical, and editing resumes from it.
+  const orig = await fetch(`${base}/api/assets/${v0}`);
+  assert.equal(Buffer.from(await orig.arrayBuffer()).toString("base64"), bytes.toString("base64"));
+  const back = JSON.parse(await record("POST /api/edit (from v1)", await post("/api/edit", { mode: "edit", sourceAssetId: v0, instruction: "a fresh start", models: ["xai"] }))) as { runId: string };
+  const bv = await runToCompletion(back.runId);
+  assert.equal(bv.status, "ok");
+  const chain2 = JSON.parse(await record("GET /api/lineage (after revert)", await fetch(`${base}/api/lineage?id=${bv.jobs[0].view!.image!.assetId}`))) as { nodes: Array<{ parentAssetId: string | null }> };
+  assert.equal(chain2.nodes.length, 5);
+  assert.equal(chain2.nodes.filter((n) => n.parentAssetId === v0).length, 2, "version 1 now has two children");
+  for (const id of ids) assert.equal((await fetch(`${base}/api/assets/${id}`)).status, 200, "no version was overwritten");
+});
+
+test("A3 item 28 over HTTP: a compare edit sends the identical instruction string to both models", async () => {
+  const { assetId } = await uploadPng();
+  const started = JSON.parse(await record("POST /api/edit (compare)", await post("/api/edit", { mode: "edit", sourceAssetId: assetId, instruction: "identical instruction check 28", models: ["xai", "google"] }))) as { runId: string };
+  const v = await runToCompletion(started.runId);
+  assert.equal(v.status, "ok", JSON.stringify(v));
+  assert.equal(v.jobs.length, 2);
+  const xb = JSON.parse(mockSeen.filter((m) => m.path === "/v1/images/edits").at(-1)!.body) as { prompt: string };
+  const gb = JSON.parse(mockSeen.filter((m) => m.path === "/v1beta/interactions").at(-1)!.body) as { input: Array<{ type: string; text?: string }> };
+  assert.equal(xb.prompt, "identical instruction check 28");
+  assert.equal(gb.input[0].text, "identical instruction check 28");
+  assert.equal(xb.prompt, gb.input[0].text);
+});
+
+test("A3 F13 over HTTP: a failed edit leaves the source untouched and shows a failed entry in the strip", async () => {
+  const { assetId: v0, bytes } = await uploadPng();
+  const started = JSON.parse(await record("POST /api/edit (503)", await post("/api/edit", { mode: "edit", sourceAssetId: v0, instruction: "edit-503 please", models: ["xai"] }))) as { runId: string };
+  const v = await runToCompletion(started.runId);
+  assert.equal(v.status, "failed");
+  assert.match(v.jobs[0].view!.message ?? "", /xAI error 503 \(service unavailable\)\. Retry\./);
+  const after = await fetch(`${base}/api/assets/${v0}`);
+  assert.equal(Buffer.from(await after.arrayBuffer()).toString("base64"), bytes.toString("base64"), "the source and every earlier version are untouched");
+  const chain = JSON.parse(await record("GET /api/lineage (failed edit)", await fetch(`${base}/api/lineage?id=${v0}`))) as { nodes: Array<{ status: string; assetId: string | null; error: string | null }> };
+  assert.equal(chain.nodes.length, 2);
+  assert.equal(chain.nodes[1].status, "error");
+  assert.equal(chain.nodes[1].assetId, null);
+  assert.match(chain.nodes[1].error ?? "", /503|Retry/);
+});
+
+test("A3 reference over HTTP: 'Use as reference' sends the image with the prompt to Google; Grok refuses before any call", async () => {
+  const { assetId } = await uploadPng();
+  const started = JSON.parse(await record("POST /api/edit (reference)", await post("/api/edit", { mode: "reference", sourceAssetId: assetId, instruction: "make a tall poster version", ratio: "16:9", models: ["google"] }))) as { runId: string };
+  const v = await runToCompletion(started.runId);
+  assert.equal(v.status, "ok", JSON.stringify(v));
+  assert.equal(v.mode, "reference");
+  const gb = JSON.parse(mockSeen.filter((m) => m.path === "/v1beta/interactions").at(-1)!.body) as { input: Array<{ type: string; text?: string; data?: string }>; response_format: Record<string, unknown> };
+  assert.ok(Array.isArray(gb.input) && gb.input.length === 2);
+  assert.equal(gb.input[0].text, "make a tall poster version");
+  assert.equal(gb.input[1].type, "image");
+  assert.equal(typeof gb.input[1].data, "string");
+  assert.deepEqual(gb.response_format, { type: "image", aspect_ratio: "16:9", image_size: "1K" });
+  const chain = JSON.parse(await record("GET /api/lineage (reference)", await fetch(`${base}/api/lineage?id=${v.jobs[0].view!.image!.assetId}`))) as { nodes: Array<{ kind: string; parentAssetId: string | null }> };
+  const last = chain.nodes.at(-1)!;
+  assert.equal(last.kind, "reference");
+  assert.equal(last.parentAssetId, assetId);
+  const xr = await post("/api/edit", { mode: "reference", sourceAssetId: assetId, instruction: "nope", ratio: "1:1", models: ["xai"] });
+  assert.equal(xr.status, 400);
+  const xj = JSON.parse(await record("POST /api/edit (xai reference)", xr)) as { error: string };
+  assert.match(xj.error, /can't take reference images/);
 });
 
 test("no response body or header, and no built browser file, contains any key (full, base64, or 12-char fragment)", async () => {

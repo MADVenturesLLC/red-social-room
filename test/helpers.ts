@@ -39,10 +39,11 @@ export async function genOk(ticks = 400000000, extra: Record<string, unknown> = 
   return jsonRes(200, { data: [{ b64_json: (await sampleJpeg()).toString("base64"), mime_type: "image/jpeg", ...extra }], usage: { cost_in_usd_ticks: ticks } }, { "x-request-id": "req-test-1", "cf-ray": "ray-1" });
 }
 
-/** Scripted fake xAI. `gen` answers POST /v1/images/generations in order (last one repeats). */
-export function fakeXai(opts: { keyCheck?: Handler; models?: Handler; gen?: Handler[] } = {}) {
+/** Scripted fake xAI. `gen` answers POST /v1/images/generations and `edits` POST /v1/images/edits,
+ *  each in order (the last one repeats). */
+export function fakeXai(opts: { keyCheck?: Handler; models?: Handler; gen?: Handler[]; edits?: Handler[] } = {}) {
   const requests: Req[] = [];
-  let g = 0;
+  let g = 0, e = 0;
   const fetch: FetchLike = async (url, init) => {
     const u = new URL(url);
     const headers: Record<string, string> = {};
@@ -55,6 +56,11 @@ export function fakeXai(opts: { keyCheck?: Handler; models?: Handler; gen?: Hand
     if (u.pathname === "/v1/images/generations") {
       const list = opts.gen ?? [() => genOk()];
       const h = list[Math.min(g++, list.length - 1)];
+      return h(req, init);
+    }
+    if (u.pathname === "/v1/images/edits") {
+      const list = opts.edits ?? [() => genOk(700000000)];
+      const h = list[Math.min(e++, list.length - 1)];
       return h(req, init);
     }
     throw new Error(`fake xAI: unexpected ${u.pathname}`);

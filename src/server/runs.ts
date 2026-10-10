@@ -3,6 +3,8 @@
 // (config.ts PROVIDER_CONCURRENCY: xAI 2, Google 2); every job is one paid call that goes through the
 // provider adapter unchanged (capabilities -> key check -> cap + reservation -> send -> cost). The UI
 // follows a run over server-sent events (GET /api/run/<id>/events) and reads it back at GET /api/run/<id>.
+// A3: the same queue carries edit runs (kind 'edit', source image in jobs.parent_asset_id) and reference
+// runs (kind 'generate' with a parent); mode on the run view says which.
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { isoNY } from "../../spike/lib/ledger.ts";
@@ -10,10 +12,10 @@ import { tx, type DB } from "./db.ts";
 import { PROVIDER_CONCURRENCY } from "./config.ts";
 import { checkPrompt } from "./prompt-check.ts";
 import { checkWritable, DataDirNotWritable, NOT_WRITABLE_MESSAGE } from "./writable.ts";
-import { executeGeneration, recordGeneration, type AppDeps, type GenerateView, type ProviderId } from "./execute.ts";
+import { executeEdit, executeGeneration, recordGeneration, type AppDeps, type GenerateView, type ProviderId } from "./execute.ts";
 import { generationCostText } from "./ledger.ts";
-import { MODEL as XAI_MODEL } from "./xai/adapter.ts";
-import { MODEL as GOOGLE_MODEL, PRO_MODEL as GOOGLE_PRO_MODEL } from "./google/adapter.ts";
+import { CAPABILITIES as XAI_CAPS, MODEL as XAI_MODEL } from "./xai/adapter.ts";
+import { CAPABILITIES as GOOGLE_CAPS, MODEL as GOOGLE_MODEL, PRO_MODEL as GOOGLE_PRO_MODEL } from "./google/adapter.ts";
 
 /** The creator cards: one per provider (Amendment 1 section 4 item 27). */
 export interface CreatorDef { id: string; provider: ProviderId; name: string; model: string; blurb: string }
@@ -24,13 +26,17 @@ export const CREATORS: readonly CreatorDef[] = Object.freeze([
   { id: "google-pro", provider: "google", name: "Nano Banana Pro", model: GOOGLE_PRO_MODEL, blurb: "Google" },
 ]);
 
+function capsOf(def: CreatorDef): { edit: boolean; maxReferenceImages: number } {
+  return def.provider === "xai" ? XAI_CAPS : GOOGLE_CAPS;
+}
+
 export const MAX_IMAGES_PER_CREATOR = 4;
 
-export interface RunJobRow { id: string; run_id: string; creator_id: string; provider: ProviderId; model: string; generation_id: string; prompt: string; ratio: string; status: string; label: string | null; created_at: string; started_at: string | null; finished_at: string | null; error: string | null }
+export interface RunJobRow { id: string; run_id: string; creator_id: string; provider: ProviderId; model: string; generation_id: string; prompt: string; ratio: string; status: string; label: string | null; kind: string; parent_asset_id: string | null; created_at: string; started_at: string | null; finished_at: string | null; error: string | null }
 export type JobStatus = "queued" | "running" | "ok" | "refused" | "error" | "blocked" | "not_sent";
 
-export interface JobView { jobId: string; creator: string; name: string; model: string; status: JobStatus; generationId: string; view: GenerateView | null }
-export interface RunView { id: string; prompt: string; status: string; created_at: string; jobs: JobView[] }
+export interface JobView { jobId: string; creator: string; name: string; model: string; status: JobStatus; generationId: string; kind: string; parentAssetId: string | null; view: GenerateView | null }
+export interface RunView { id: string; prompt: string; status: string; created_at: string; mode: "generate" | "edit" | "reference"; jobs: JobView[] }
 
 export class RunInputError extends Error {
   constructor(message: string) { super(message); this.name = "RunInputError"; }
@@ -85,7 +91,7 @@ export function startRun(d: AppDeps, input: { prompt: unknown; ratio: unknown; c
   const queued: Array<{ jobId: string; provider: ProviderId }> = [];
   tx(d.db, () => {
     d.db.prepare("INSERT INTO runs (id, created_at, prompt, status) VALUES (?, ?, ?, ?)").run(runId, isoNY(), prompt, pc.allowed ? "running" : "blocked");
-    const ins = d.db.prepare("INSERT INTO jobs (id, run_id, creator_id, provider, model, generation_id, prompt, ratio, status, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    const ins = d.db.prepare("INSERT INTO jobs (id, run_id, creator_id, provider, model, generation_id, prompt, ratio, status, label, kind, parent_asset_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generate', NULL, ?)");
     for (const c of creators) {
       const def = CREATORS.find((x) => x.id === c.id)!;
       for (let i = 0; i < c.n; i++) {
@@ -106,6 +112,73 @@ export function startRun(d: AppDeps, input: { prompt: unknown; ratio: unknown; c
   for (const q of queued) r.queues.get(q.provider)!.push(q.jobId);
   pump(d, r);
   return { runId, blocked: false, message: null, label: pc.label };
+}
+
+// ---- A3: edit and reference runs (same queue, same SSE) ----
+
+export interface EditRunInput { mode: "edit" | "reference"; sourceAssetId: string; instruction: string; ratio: string | null; models: string[] }
+
+/** Parse and validate the /api/edit body: edit (up to two models = compare) or reference (image + prompt). */
+export function parseEditInput(d: AppDeps, body: unknown): EditRunInput {
+  const o = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+  const mode: "edit" | "reference" = o.mode === "reference" ? "reference" : "edit";
+  const sourceAssetId = typeof o.sourceAssetId === "string" ? o.sourceAssetId : "";
+  if (!/^[a-f0-9]{64}$/.test(sourceAssetId)) throw new RunInputError("That image is not stored. Upload or generate it first.");
+  if (!d.db.prepare("SELECT 1 FROM assets WHERE id = ?").get(sourceAssetId)) throw new RunInputError("That image is not in the store. Upload or generate it first.");
+  const instruction = typeof o.instruction === "string" ? o.instruction.trim() : "";
+  if (!instruction) throw new RunInputError(mode === "edit" ? "Type an instruction first." : "Type a prompt first.");
+  if (instruction.length > 64000) throw new RunInputError("Instructions are limited to 64,000 characters.");
+  const raw = Array.isArray(o.models) ? o.models : [];
+  const models: string[] = [];
+  for (const m of raw) {
+    const id = typeof m === "string" ? m : (m && typeof m === "object" ? (m as { id?: unknown }).id : undefined);
+    const def = typeof id === "string" ? CREATORS.find((x) => x.id === id) : undefined;
+    if (!def) throw new RunInputError(`Unknown creator: ${String(id)}`);
+    if (models.includes(def.id)) throw new RunInputError(`Creator ${def.id} is listed twice.`);
+    if (mode === "edit" && !capsOf(def).edit) throw new RunInputError(`${def.name} can't edit images.`);
+    if (mode === "reference" && capsOf(def).maxReferenceImages < 1) throw new RunInputError(`${def.name} can't take reference images. Use a Google card, or use Edit.`);
+    models.push(def.id);
+  }
+  if (models.length < 1 || models.length > 2) throw new RunInputError("Pick 1-2 models (two runs a compare).");
+  let ratio: string | null = null;
+  if (mode === "reference") {
+    ratio = typeof o.ratio === "string" ? o.ratio : "";
+    if (!ratio) throw new RunInputError("Pick an aspect ratio.");
+  }
+  return { mode, sourceAssetId, instruction, ratio, models };
+}
+
+/** Start an edit or reference run: one job per model, same runner queue, same events. */
+export function startEditRun(d: AppDeps, body: unknown): { runId: string; blocked: boolean; message: string | null; label: string | null; mode: "edit" | "reference" } {
+  const input = parseEditInput(d, body);
+  checkWritable(d.dataDir);
+  const pc = checkPrompt(input.instruction, d.promptMethod, d.switches.promptCheck, d.db);
+  const runId = randomUUID();
+  const queued: Array<{ jobId: string; provider: ProviderId }> = [];
+  tx(d.db, () => {
+    d.db.prepare("INSERT INTO runs (id, created_at, prompt, status) VALUES (?, ?, ?, ?)").run(runId, isoNY(), input.instruction, pc.allowed ? "running" : "blocked");
+    const ins = d.db.prepare("INSERT INTO jobs (id, run_id, creator_id, provider, model, generation_id, prompt, ratio, status, label, kind, parent_asset_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    for (const id of input.models) {
+      const def = CREATORS.find((x) => x.id === id)!;
+      const jobId = randomUUID();
+      ins.run(jobId, runId, def.id, def.provider, def.model, randomUUID(), input.instruction,
+        input.mode === "reference" ? input.ratio! : "source",
+        pc.allowed ? "queued" : "blocked", pc.allowed ? pc.label : null,
+        input.mode === "reference" ? "generate" : "edit", input.sourceAssetId, isoNY());
+      queued.push({ jobId, provider: def.provider });
+    }
+  });
+  if (!pc.allowed) {
+    const rows = d.db.prepare("SELECT * FROM jobs WHERE run_id = ? ORDER BY created_at, id").all(runId) as unknown as RunJobRow[];
+    for (const j of rows) {
+      recordGeneration(d, { runId, provider: j.provider, model: j.model, generationId: j.generation_id, prompt: input.instruction, ratio: j.ratio, kind: j.kind === "edit" ? "edit" : "generate", parent_asset_id: j.parent_asset_id, status: pc.result === "blocked" ? "blocked" : "not_sent", error_code: pc.result, error_message: pc.message });
+    }
+    return { runId, blocked: true, message: pc.message, label: pc.label, mode: input.mode };
+  }
+  const r = runnerOf(d);
+  for (const q of queued) r.queues.get(q.provider)!.push(q.jobId);
+  pump(d, r);
+  return { runId, blocked: false, message: null, label: pc.label, mode: input.mode };
 }
 
 /** Startup sweep: jobs left queued/running belong to a process that is gone (one server per data directory). */
@@ -161,7 +234,9 @@ async function executeJob(d: AppDeps, r: Runner, jobId: string): Promise<void> {
   let status: JobStatus;
   let error: string | null = null;
   try {
-    const view = await executeGeneration(d, { runId: job.run_id, provider: job.provider, model: job.model, prompt: job.prompt, ratio: job.ratio, generationId: job.generation_id });
+    const view = job.kind === "edit"
+      ? await executeEdit(d, { runId: job.run_id, provider: job.provider, model: job.model, instruction: job.prompt, sourceAssetId: job.parent_asset_id!, generationId: job.generation_id })
+      : await executeGeneration(d, { runId: job.run_id, provider: job.provider, model: job.model, prompt: job.prompt, ratio: job.ratio, generationId: job.generation_id, referenceAssetId: job.parent_asset_id ?? null });
     status = view.status;
     error = view.status === "error" || view.status === "refused" ? view.message : null;
   } catch (e) {
@@ -215,7 +290,7 @@ function jobViewOf(d: AppDeps, row: Record<string, unknown>): JobView {
     costText: generationCostText(d.db, String(row.generation_id)),
     ref: (row.client_request_id as string | null) ?? null,
   } : null;
-  return { jobId: String(row.id), creator: String(row.creator_id), name: creator?.name ?? String(row.creator_id), model: String(row.model), status: row.status as JobStatus, generationId: String(row.generation_id), view };
+  return { jobId: String(row.id), creator: String(row.creator_id), name: creator?.name ?? String(row.creator_id), model: String(row.model), status: row.status as JobStatus, generationId: String(row.generation_id), kind: String(row.kind ?? "generate"), parentAssetId: (row.parent_asset_id as string | null) ?? null, view };
 }
 
 /** The whole run as the UI and tests read it. */
@@ -223,5 +298,7 @@ export function runView(d: AppDeps, runId: string): RunView | null {
   const run = d.db.prepare("SELECT id, prompt, status, created_at FROM runs WHERE id = ?").get(runId) as { id: string; prompt: string; status: string; created_at: string } | undefined;
   if (!run) return null;
   const rows = d.db.prepare(VIEW_SELECT).all(runId) as unknown as Array<Record<string, unknown>>;
-  return { ...run, jobs: rows.map((row) => jobViewOf(d, row)) };
+  const jobs = rows.map((row) => jobViewOf(d, row));
+  const mode: RunView["mode"] = jobs.some((j) => j.kind === "edit") ? "edit" : jobs.some((j) => j.parentAssetId) ? "reference" : "generate";
+  return { ...run, mode, jobs };
 }

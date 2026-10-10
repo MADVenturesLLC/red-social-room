@@ -1,9 +1,12 @@
 // Google (Gemini Interactions API) adapter — Nano Banana 2 (gemini-3.1-flash-image). A2 (Amendment 1 section 4).
-// Same shape as the xAI adapter: capabilities (G6/F11) -> free key check (F1) -> per attempt: cap check +
-// reservation (G2/F20) -> one HTTP attempt -> cost (item 8: always estimated from usage tokens; Google
-// returns no billed figure) -> settle or hold -> map the result.
+// generate() and edit() share one attempt loop (performGoogleCall): capabilities (G6/F11) -> free key check (F1)
+// -> per attempt: cap check + reservation (G2/F20) -> one HTTP attempt -> cost (item 8: always estimated from
+// usage tokens; Google returns no billed figure) -> settle or hold -> map the result.
 // Google extras:
 // - store:false on every request body (D4 / item 12) and never a previous_interaction_id (item 12).
+// - A3: edit() sends the source image inline as an input block ([text, image], spike-results/gemini/
+//   02-edit-background-red.json) and generate() accepts one reference image the same way (the docs allow
+//   up to 14 reference images, RESEARCH-models.md:57). Edits and references stay single-turn (D4).
 // - Both error-body shapes are mapped (items 6, 29): newer {error:{code:"..."}} and classic
 //   {error:{code:<number>,status:"...",details:[{reason}]}}; anything else falls back to the HTTP status
 //   and shows the first 500 characters (scrubbed).
@@ -38,6 +41,8 @@ export const API_REVISION = "2026-05-20";
  *  4:5 is supported directly by Google (no crop; D2's crop note is an xAI-only path). */
 export const CAPABILITIES = Object.freeze({
   generate: true, edit: true, mask: false, maxN: 1,
+  // RESEARCH-models.md:57: "Send image + text instruction ... Up to 14 reference images."
+  maxReferenceImages: 14,
   ratios: Object.freeze(["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"] as const),
   pickerRatios: Object.freeze(["4:5", "1:1", "3:4", "9:16", "16:9", "2:3", "3:2"] as const),
   resolutions: Object.freeze(["1k"] as const), // A2 asks for 1K only (P5 option A)
@@ -63,8 +68,8 @@ export interface GoogleDeps {
 }
 
 export type GoogleOutcome =
-  | { kind: "ok"; image: Buffer; mime: string | null; note: string | null; clientRequestId: string; providerRequestId: string | null; providerTrace: string | null; cost: CostInfo; latencyMs: number; attempts: AttemptLog[]; modelVersionListing: string | null; sentRatio: string }
-  | { kind: "refused"; message: string; clientRequestId: string; providerRequestId: string | null; cost: CostInfo; attempts: AttemptLog[]; sentRatio: string }
+  | { kind: "ok"; image: Buffer; mime: string | null; note: string | null; clientRequestId: string; providerRequestId: string | null; providerTrace: string | null; cost: CostInfo; latencyMs: number; attempts: AttemptLog[]; modelVersionListing: string | null; sentRatio: string | null }
+  | { kind: "refused"; message: string; clientRequestId: string; providerRequestId: string | null; cost: CostInfo; attempts: AttemptLog[]; sentRatio: string | null }
   | { kind: "error"; code: ErrorCode; message: string; clientRequestId: string | null; providerRequestId: string | null; cost: CostInfo | null; attempts: AttemptLog[]; sentRatio: string | null };
 
 /** Requested ratio -> what is sent. Anything off the list is refused before any network call (F11, item 1). */
@@ -241,53 +246,45 @@ function traceOf(r: AttemptResult): string | null {
   return Object.keys(t).length ? JSON.stringify(t) : null;
 }
 
-// ---- generate ----
+// ---- the shared attempt loop (A3: generate and edit both run through it) ----
 
-export async function generate(d: GoogleDeps, req: { prompt: string; ratio: string; generationId: string; model?: string }): Promise<GoogleOutcome> {
+interface GoogleCallPlan {
+  kind: "generate" | "edit";
+  model: string;
+  url: string;
+  body: Record<string, unknown>;
+  /** Log prefix including the generation id, e.g. `google edit gen=<uuid>`. */
+  logTag: string;
+  generationId: string;
+  sentRatio: string | null;
+  estMicros: number;
+  estSource: string;
+  versionListing: string | null;
+  usePro: boolean;
+}
+
+async function performGoogleCall(d: GoogleDeps, plan: GoogleCallPlan): Promise<GoogleOutcome> {
   const log = (m: string) => d.log?.(d.keys.scrub(m));
   const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const random = d.random ?? Math.random;
   const attempts: AttemptLog[] = [];
 
-  // Capabilities (G6, F11): nothing is sent for an unsupported setting.
-  const mapped = mapRatio(req.ratio);
-  if ("error" in mapped) return { kind: "error", code: "bad_input", message: mapped.error, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: null };
-  const prompt = req.prompt.trim();
-  if (!prompt) return { kind: "error", code: "bad_input", message: "Type a prompt first.", clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: null };
-  if (prompt.length > CAPABILITIES.maxPromptChars) return { kind: "error", code: "bad_input", message: `Not supported by Nano Banana 2: prompts over ${CAPABILITIES.maxPromptChars} characters`, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: null };
-  const resolution = resolutionFor(d.switches);
-  const model = req.model ?? MODEL; // FD:11: the Pro card passes its own model id
-  const usePro = model === PRO_MODEL;
-
-  // Free key check before the first paid call (F1).
-  const kc = await checkGoogleKey(d);
-  if (!kc.ok) return { kind: "error", code: kc.code, message: kc.message, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: mapped.send };
-
-  const est = estimate(d.db, d.prices, { provider: "google", model, kind: "generate", resolution, quality: null });
-  // item 12/D4: store:false is a constant on every body; the prompt goes out as input; 1K image requested.
-  const body: Record<string, unknown> = {
-    model,
-    input: prompt,
-    response_format: { type: "image", aspect_ratio: mapped.send, image_size: "1K" },
-    store: false,
-  };
-
   let retries429 = 0, retriedConnection = false;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let res;
     try {
-      res = reserve(d.db, { provider: "google", model, kind: "generate", resolution, quality: null, generationId: req.generationId, attempt, estimateMicros: est.micros, estimateSource: est.source });
+      res = reserve(d.db, { provider: "google", model: plan.model, kind: plan.kind, resolution: resolutionFor(d.switches), quality: null, generationId: plan.generationId, attempt, estimateMicros: plan.estMicros, estimateSource: plan.estSource });
     } catch (e) {
       if (e instanceof CapRefused) {
-        log(`google generate gen=${req.generationId} attempt=${attempt} refused by cap before sending`);
-        return { kind: "error", code: "cap", message: e.message, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: mapped.send };
+        log(`${plan.logTag} attempt=${attempt} refused by cap before sending`);
+        return { kind: "error", code: "cap", message: e.message, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: plan.sentRatio };
       }
       throw e;
     }
     const id = res.id;
     const r = await attemptOnce(d.fetch, {
-      method: "POST", url: `${d.baseUrl ?? GOOGLE_BASE_URL}/v1beta/interactions`,
-      headers: { ...d.keys.authHeader(), "Api-Revision": API_REVISION }, body, timeoutMs: d.timeoutMs ?? CLOUD_TIMEOUT_MS,
+      method: "POST", url: plan.url,
+      headers: { ...d.keys.authHeader(), "Api-Revision": API_REVISION }, body: plan.body, timeoutMs: d.timeoutMs ?? CLOUD_TIMEOUT_MS,
     });
     const j = r.json as Interaction | null;
     const providerRequestId = j && typeof j === "object" && typeof (j as { id?: unknown }).id === "string" ? (j as { id: string }).id : null;
@@ -298,7 +295,7 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
     const late = (e: unknown, x: { httpStatus: number | null; outcome: string; actualMicros: number | null; costSource: string | null; reason: string; note: string | null }): CostInfo => {
       if (!(e instanceof RowNotReserved)) throw e;
       const now = recordLateResult(d.db, id, { ...x, providerRequestId, providerTrace: trace });
-      log(`google generate gen=${req.generationId} ref=${id} attempt=${attempt} late result: row was already ${now.status ?? "missing"}; recorded as a late_result event`);
+      log(`${plan.logTag} ref=${id} attempt=${attempt} late result: row was already ${now.status ?? "missing"}; recorded as a late_result event`);
       return now.status === "settled" ? { micros: now.actualMicros, source: (now.costSource ?? "unresolved") as CostInfo["source"], heldMicros: 0 } : { micros: null, source: "unresolved", heldMicros: now.countedMicros };
     };
 
@@ -310,9 +307,9 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
         late(e, { httpStatus: null, outcome: "no_connection", actualMicros: 0, costSource: "not_sent", reason: `no connection (${r.errorCode ?? "unknown"})`, note: null });
       }
       attempts.push({ clientRequestId: id, status: null, outcome: "no_connection", costMicros: 0, costSource: "not_sent" });
-      log(`google generate gen=${req.generationId} ref=${id} attempt=${attempt} no connection (${r.errorCode})`);
+      log(`${plan.logTag} ref=${id} attempt=${attempt} no connection (${r.errorCode})`);
       if (!retriedConnection && attempt < MAX_ATTEMPTS) { retriedConnection = true; continue; }
-      return { kind: "error", code: "unavailable", message: `Couldn't reach Google (${r.errorCode === "ECONNREFUSED" ? "connection refused" : r.errorCode ?? "no connection"}).`, clientRequestId: id, providerRequestId: null, cost: { micros: 0, source: "not_sent", heldMicros: 0 }, attempts, sentRatio: mapped.send };
+      return { kind: "error", code: "unavailable", message: `Couldn't reach Google (${r.errorCode === "ECONNREFUSED" ? "connection refused" : r.errorCode ?? "no connection"}).`, clientRequestId: id, providerRequestId: null, cost: { micros: 0, source: "not_sent", heldMicros: 0 }, attempts, sentRatio: plan.sentRatio };
     }
 
     const st = r.status;
@@ -323,7 +320,7 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
       } catch (e) {
         return late(e, { httpStatus: st, outcome: r.outcome, actualMicros: null, costSource: null, reason, note });
       }
-      return { micros: null, source: "unresolved", heldMicros: est.micros };
+      return { micros: null, source: "unresolved", heldMicros: plan.estMicros };
     };
     const settleAt = (usd: number, source: CostSource, basis: string): CostInfo => {
       let micros: number | null = null;
@@ -339,10 +336,10 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
     };
     const finish = (costInfo: CostInfo, code: ErrorCode, message: string): GoogleOutcome => {
       attempts.push({ clientRequestId: id, status: st, outcome: r.outcome, costMicros: costInfo.micros, costSource: costInfo.source });
-      log(`google generate gen=${req.generationId} ref=${id} attempt=${attempt} outcome=${r.outcome} status=${st} latency=${r.latency_ms}ms cost=${costInfo.micros === null ? `held ${fmtUsd(est.micros)}` : fmtUsd(costInfo.micros)} (${costInfo.source})`);
-      return { kind: "error", code, message, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: mapped.send };
+      log(`${plan.logTag} ref=${id} attempt=${attempt} outcome=${r.outcome} status=${st} latency=${r.latency_ms}ms cost=${costInfo.micros === null ? `held ${fmtUsd(plan.estMicros)}` : fmtUsd(costInfo.micros)} (${costInfo.source})`);
+      return { kind: "error", code, message, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: plan.sentRatio };
     };
-    const held = fmtUsd(est.micros);
+    const held = fmtUsd(plan.estMicros);
 
     // Timeout / dropped connection after send (F3): the call may have been billed; hold the reservation.
     if (r.outcome === "timeout") return finish(hold(`unresolved: HTTP timeout after send (F3); ${held} kept until checked against Google Cloud billing`), "timeout", `Google timed out after ${Math.round((d.timeoutMs ?? CLOUD_TIMEOUT_MS) / 1000)} s. It may still have been charged; ${held} is held against your cap until you check.`);
@@ -354,7 +351,7 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
     // body has it.
     if (st === 429) {
       const cls = classifyGoogleError(st, j, r, d.keys);
-      const c2 = usageCost(j, false, usePro);
+      const c2 = usageCost(j, false, plan.usePro);
       const costInfo = cls.code === "quota"
         ? settleAt(0, "assumed_zero_rejected", `estimated $0: Google quota/billing 429 (F8)${cls.detail ? `: ${cls.detail}` : ""}`)
         : c2 ? settleAt(c2.usd, "estimated_tokens", `estimated from API usage tokens on a 429 (F4): ${c2.detail}`)
@@ -371,14 +368,14 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
       if (waitMs !== null && attempt < MAX_ATTEMPTS) {
         retries429++;
         attempts.push({ clientRequestId: id, status: st, outcome: r.outcome, costMicros: costInfo.micros, costSource: costInfo.source });
-        log(`google generate gen=${req.generationId} waiting for rate limit ${waitMs} ms`);
+        log(`${plan.logTag} waiting for rate limit ${waitMs} ms`);
         await sleep(waitMs);
         continue;
       }
       return finish(costInfo, "rate_limit", `Rate limited by Google.${asked} Try again.`);
     }
 
-    const cost = googleAttemptCost(r, est.micros, usePro);
+    const cost = googleAttemptCost(r, plan.estMicros, plan.usePro);
 
     if (st !== null && st >= 200 && st < 300) {
       // Malformed / oversized 200 (F15): settle from usage if present, otherwise hold. Never priced at the text rate.
@@ -392,7 +389,7 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
         const detail = providerDetail(r, d.keys);
         const costInfo = cost.usd === null ? hold(cost.basis) : settleAt(cost.usd, cost.source ?? "estimated_tokens", cost.basis);
         attempts.push({ clientRequestId: id, status: st, outcome: r.outcome, costMicros: costInfo.micros, costSource: costInfo.source });
-        return { kind: "refused", message: `Refused by Google (${ecode}).${detail ? ` ${detail}` : ""}`, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: mapped.send };
+        return { kind: "refused", message: `Refused by Google (${ecode}).${detail ? ` ${detail}` : ""}`, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: plan.sentRatio };
       }
       if (j.status === "failed" || j.status === "cancelled") {
         const costInfo = cost.usd === null ? hold(cost.basis) : settleAt(cost.usd, cost.source ?? "estimated_tokens", cost.basis);
@@ -406,20 +403,20 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
         if (isF9TextOnly(j)) {
           const text = outputText(j).join(" ").replace(/\s+/g, " ").trim();
           attempts.push({ clientRequestId: id, status: st, outcome: r.outcome, costMicros: costInfo.micros, costSource: costInfo.source });
-          return { kind: "refused", message: `Google returned no image: ${d.keys.scrub(text).slice(0, 500) || "(no text)"}`, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: mapped.send };
+          return { kind: "refused", message: `Google returned no image: ${d.keys.scrub(text).slice(0, 500) || "(no text)"}`, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: plan.sentRatio };
         }
         return finish(costInfo, "unavailable", `Google sent a response the app couldn't read (HTTP ${st}).`);
       }
       const costInfo = cost.usd === null ? hold(cost.basis) : settleAt(cost.usd, cost.source ?? "estimated_tokens", cost.basis);
       attempts.push({ clientRequestId: id, status: st, outcome: r.outcome, costMicros: costInfo.micros, costSource: costInfo.source });
-      log(`google generate gen=${req.generationId} ref=${id} attempt=${attempt} outcome=${r.outcome} status=${st} latency=${r.latency_ms}ms cost=${fmtUsd(costInfo.micros ?? 0)} (${costInfo.source})`);
+      log(`${plan.logTag} ref=${id} attempt=${attempt} outcome=${r.outcome} status=${st} latency=${r.latency_ms}ms cost=${fmtUsd(costInfo.micros ?? 0)} (${costInfo.source})`);
       return {
         kind: "ok",
         image: Buffer.from(images[0].data as string, "base64"),
         mime: typeof images[0].mime_type === "string" ? images[0].mime_type : null,
         note: j.status === "incomplete" ? "Google marked this result incomplete" : null,
         clientRequestId: id, providerRequestId, providerTrace: trace, cost: costInfo,
-        latencyMs: r.latency_ms, attempts, modelVersionListing: kc.versionListing, sentRatio: mapped.send,
+        latencyMs: r.latency_ms, attempts, modelVersionListing: plan.versionListing, sentRatio: plan.sentRatio,
       };
     }
 
@@ -429,11 +426,105 @@ export async function generate(d: GoogleDeps, req: { prompt: string; ratio: stri
     if (cls.code === "auth") invalidateKeyCheck(d);
     if (cls.code === "auth") return finish(costInfo, "auth", `Key rejected (HTTP ${st}). Check the Google key in Settings.`);
     if (cls.code === "quota") return finish(costInfo, "quota", "Google prepaid credit is used up or billing is disabled — check Google AI Studio / Cloud Billing.");
-    if (cls.code === "bad_input") return finish(costInfo, st === 404 ? "bad_input" : "bad_input", st === 404 ? `Model not available: ${cls.detail}` : `Google rejected the request: ${cls.detail}`);
+    if (cls.code === "bad_input") return finish(costInfo, "bad_input", st === 404 ? `Model not available: ${cls.detail}` : `Google rejected the request: ${cls.detail}`);
     if (cls.code === "rate_limit") return finish(costInfo, "rate_limit", `Rate limited by Google. Try again.`);
     if (cls.code === "timeout") return finish(costInfo, "timeout", `Google cancelled the call (HTTP ${st}).`);
     return finish(costInfo, "unavailable", `Google error ${st}. Retry.`);
   }
   // Unreachable: every loop path returns or continues with attempt < MAX_ATTEMPTS.
-  throw new Error("google generate: attempt loop ended without a result");
+  throw new Error("google call: attempt loop ended without a result");
+}
+
+// ---- generate ----
+
+export interface GoogleGenerateReq {
+  prompt: string;
+  ratio: string;
+  generationId: string;
+  model?: string;
+  /** A3 "Use as reference": one reference image rides with the prompt (single-turn, like an edit input). */
+  reference?: { image: Buffer; mime: string | null } | null;
+}
+
+export async function generate(d: GoogleDeps, req: GoogleGenerateReq): Promise<GoogleOutcome> {
+  // Capabilities (G6, F11): nothing is sent for an unsupported setting.
+  const mapped = mapRatio(req.ratio);
+  if ("error" in mapped) return { kind: "error", code: "bad_input", message: mapped.error, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  const prompt = req.prompt.trim();
+  if (!prompt) return { kind: "error", code: "bad_input", message: "Type a prompt first.", clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  if (prompt.length > CAPABILITIES.maxPromptChars) return { kind: "error", code: "bad_input", message: `Not supported by Nano Banana 2: prompts over ${CAPABILITIES.maxPromptChars} characters`, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  const model = req.model ?? MODEL; // FD:11: the Pro card passes its own model id
+  const usePro = model === PRO_MODEL;
+
+  // Free key check before the first paid call (F1).
+  const kc = await checkGoogleKey(d);
+  if (!kc.ok) return { kind: "error", code: kc.code, message: kc.message, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: mapped.send };
+
+  const est = estimate(d.db, d.prices, { provider: "google", model, kind: "generate", resolution: resolutionFor(d.switches), quality: null });
+  // item 12/D4: store:false is a constant on every body; the prompt goes out as input; 1K image requested.
+  // A3: with a reference image, input becomes the [text, image] array (the same block shape the edit call uses).
+  const input: unknown = req.reference
+    ? [{ type: "text", text: prompt }, { type: "image", mime_type: req.reference.mime ?? "image/jpeg", data: req.reference.image.toString("base64") }]
+    : prompt;
+  const body: Record<string, unknown> = {
+    model,
+    input,
+    response_format: { type: "image", aspect_ratio: mapped.send, image_size: "1K" },
+    store: false,
+  };
+
+  return performGoogleCall(d, {
+    kind: "generate",
+    model,
+    url: `${d.baseUrl ?? GOOGLE_BASE_URL}/v1beta/interactions`,
+    body,
+    logTag: `google generate gen=${req.generationId}`,
+    generationId: req.generationId,
+    sentRatio: mapped.send,
+    estMicros: est.micros,
+    estSource: est.source,
+    versionListing: kc.versionListing,
+    usePro,
+  });
+}
+
+// ---- edit (A3) ----
+
+export interface GoogleEditReq { instruction: string; image: Buffer; mime: string | null; generationId: string; model?: string }
+
+/** Edit by description: the source image rides inline in `input` ([text, image], spike-results/gemini/
+ *  02-edit-background-red.json). No aspect_ratio is sent: the edit keeps the source ratio. */
+export async function edit(d: GoogleDeps, req: GoogleEditReq): Promise<GoogleOutcome> {
+  const instruction = req.instruction.trim();
+  if (!instruction) return { kind: "error", code: "bad_input", message: "Type an instruction first.", clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  if (instruction.length > CAPABILITIES.maxPromptChars) return { kind: "error", code: "bad_input", message: `Not supported by Nano Banana 2: instructions over ${CAPABILITIES.maxPromptChars} characters`, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  if (!req.image || req.image.length === 0) return { kind: "error", code: "bad_input", message: "The source image is missing; nothing was sent.", clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  const model = req.model ?? MODEL;
+  const usePro = model === PRO_MODEL;
+
+  // Free key check before the first paid call (F1).
+  const kc = await checkGoogleKey(d);
+  if (!kc.ok) return { kind: "error", code: kc.code, message: kc.message, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+
+  const est = estimate(d.db, d.prices, { provider: "google", model, kind: "edit", resolution: resolutionFor(d.switches), quality: null });
+  const body: Record<string, unknown> = {
+    model,
+    input: [{ type: "text", text: instruction }, { type: "image", mime_type: req.mime ?? "image/jpeg", data: req.image.toString("base64") }],
+    response_format: { type: "image", image_size: "1K" },
+    store: false,
+  };
+
+  return performGoogleCall(d, {
+    kind: "edit",
+    model,
+    url: `${d.baseUrl ?? GOOGLE_BASE_URL}/v1beta/interactions`,
+    body,
+    logTag: `google edit gen=${req.generationId}`,
+    generationId: req.generationId,
+    sentRatio: null,
+    estMicros: est.micros,
+    estSource: est.source,
+    versionListing: kc.versionListing,
+    usePro,
+  });
 }

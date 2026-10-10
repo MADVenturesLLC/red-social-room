@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   ratio TEXT NOT NULL,
   status TEXT NOT NULL,                                  -- queued | running | ok | refused | error | blocked | not_sent
   label TEXT,                                            -- the run's real-person check label (P1c send_labeled)
+  kind TEXT NOT NULL DEFAULT 'generate',                 -- A3: generate | edit
+  parent_asset_id TEXT REFERENCES assets(id),            -- A3: the image being edited (edit) or referenced (reference run)
   created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
   error TEXT
 );
@@ -65,7 +67,9 @@ CREATE TABLE IF NOT EXISTS generations (
   output_asset_id TEXT REFERENCES assets(id),            -- original, stored unchanged
   display_asset_id TEXT REFERENCES assets(id),           -- what the tile shows (e.g. the 4:5 crop, D2)
   display_note TEXT,
-  latency_ms INTEGER
+  latency_ms INTEGER,
+  parent_asset_id TEXT REFERENCES assets(id),            -- A3 lineage: the version this one was made from
+  mask_asset_id TEXT REFERENCES assets(id)               -- A3 (reserved): the painted mask, once mask edits exist
 );
 
 CREATE TABLE IF NOT EXISTS posts (
@@ -211,6 +215,7 @@ export function openDb(path: string, opts: { spikeLedgerPath?: string | null; se
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = FULL;");
   migrateLedger(db);
   db.exec(SCHEMA);
+  migrateA3(db);
   const spike = opts.spikeLedgerPath === undefined ? SPIKE_LEDGER_PATH : opts.spikeLedgerPath;
   importLedgerOnce(db, spike, opts.seeds ?? (spike ? LEDGER_SEEDS : []));
   return db;
@@ -222,6 +227,20 @@ export function openDb(path: string, opts: { spikeLedgerPath?: string | null; se
  */
 function migrateLedger(db: DB): void {
   db.exec("DROP VIEW IF EXISTS spend_by_month_provider; DROP VIEW IF EXISTS spend_by_month; DROP VIEW IF EXISTS spend_counted;");
+}
+
+/**
+ * A3: CREATE TABLE IF NOT EXISTS never alters an existing table, so older databases get the lineage and
+ * job-kind columns added here. New databases already have them from SCHEMA; this is a no-op for them.
+ */
+function migrateA3(db: DB): void {
+  const cols = (t: string) => new Set((db.prepare(`PRAGMA table_info(${/* fixed name */ t})`).all() as Array<{ name: string }>).map((c) => c.name));
+  const jobs = cols("jobs");
+  if (!jobs.has("kind")) db.exec("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'generate'");
+  if (!jobs.has("parent_asset_id")) db.exec("ALTER TABLE jobs ADD COLUMN parent_asset_id TEXT REFERENCES assets(id)");
+  const gens = cols("generations");
+  if (!gens.has("parent_asset_id")) db.exec("ALTER TABLE generations ADD COLUMN parent_asset_id TEXT REFERENCES assets(id)");
+  if (!gens.has("mask_asset_id")) db.exec("ALTER TABLE generations ADD COLUMN mask_asset_id TEXT REFERENCES assets(id)");
 }
 
 /** Run fn inside BEGIN IMMEDIATE ... COMMIT (rolled back on throw). */
