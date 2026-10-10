@@ -33,6 +33,10 @@ const slowGate = new Promise<void>((r) => { releaseSlow = r; });
 let releaseLate: () => void = () => undefined, lateSeen: () => void = () => undefined;
 const lateArrived = new Promise<void>((r) => { lateSeen = r; });
 const lateGate = new Promise<void>((r) => { releaseLate = r; });
+// A prompt containing "sse-hold" is held until releaseSse(), so the A2 SSE test can subscribe while a job runs.
+let releaseSse: () => void = () => undefined, sseSeen: () => void = () => undefined;
+const sseArrived = new Promise<void>((r) => { sseSeen = r; });
+const sseGate = new Promise<void>((r) => { releaseSse = r; });
 let keyCheckBeforeFirstRequest = false;
 // A1 pin 17, line 368: set only when the server STARTS (not at build), to prove it is read at runtime.
 const ALLOWED_HOSTS_ENV = "  Phone.Tailnet-Example.ts.net , other.example ";
@@ -104,6 +108,7 @@ before(async () => {
       if (req.url === "/v1/images/generations" && req.method === "POST") {
         if (body.includes("late-call")) { lateSeen(); void lateGate.then(() => { res.setHeader("x-request-id", "req-e2e-late"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 900000000 } })); }); return; }
         if (body.includes("slow-call")) { slowSeen(); void slowGate.then(() => { res.setHeader("x-request-id", "req-e2e-slow"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 400000000 } })); }); return; }
+        if (body.includes("sse-hold")) { sseSeen(); void sseGate.then(() => { res.setHeader("x-request-id", "req-e2e-sse"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 400000000 } })); }); return; }
         res.setHeader("x-request-id", "req-e2e");
         return res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: body.includes("medium-bill") ? 600000000 : 400000000 } }));
       }
@@ -537,6 +542,43 @@ test("A2 over HTTP: one prompt to both creators shows both results; the Google c
   assert.equal(saved.already, false);
   const lib = JSON.parse(await record("GET /api/library?q=balloon", await fetch(`${base}/api/library?q=balloon`))) as { posts: unknown[] };
   assert.equal(lib.posts.length, 1);
+});
+
+/** Read an SSE stream to its end (or the timeout); returns the raw frames and whether the stream closed. */
+async function readSseAll(path: string, ms = 20_000): Promise<{ text: string; ended: boolean }> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  const res = await fetch(base + path, { signal: ctrl.signal });
+  assert.ok((res.headers.get("content-type") ?? "").startsWith("text/event-stream"), res.headers.get("content-type") ?? "");
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let text = "", ended = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) { ended = true; break; }
+      text += dec.decode(value, { stream: true });
+    }
+  } catch { /* aborted at the timeout */ } finally { clearTimeout(t); }
+  return { text, ended };
+}
+
+test("A2 SSE: the events stream delivers job updates and the final run frame, and closes for a finished run", async () => {
+  const started = JSON.parse(await record("POST /api/run (sse)", await post("/api/run", { prompt: "sse-hold: a streamed kite", ratio: "1:1", creators: [{ id: "xai", n: 1 }] }))) as { runId: string };
+  await sseArrived; // the job is in flight at the fake provider
+  const reading = readSseAll(`/api/run/${started.runId}/events`);
+  await new Promise((r) => setTimeout(r, 150)); // let the stream subscribe, then let the job finish
+  releaseSse();
+  const frames = await reading;
+  assert.match(frames.text, /"type":"snapshot"/);
+  assert.match(frames.text, /"type":"job"/);
+  assert.match(frames.text, /"type":"run"/);
+  assert.match(frames.text, /"status":"ok"/);
+  assert.equal(frames.ended, true, "the stream closes after the final run frame");
+  // A late subscriber to a finished run gets the snapshot and an immediate close (no hang).
+  const late = await readSseAll(`/api/run/${started.runId}/events`);
+  assert.match(late.text, /"type":"snapshot"/);
+  assert.equal(late.ended, true, "a finished run closes the stream at once");
 });
 
 test("A2 F12 partial over HTTP: the failing creator shows the right message while the other returns", async () => {

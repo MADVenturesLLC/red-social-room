@@ -10,7 +10,7 @@ import { tx, type DB } from "./db.ts";
 import { PROVIDER_CONCURRENCY } from "./config.ts";
 import { checkPrompt } from "./prompt-check.ts";
 import { checkWritable, DataDirNotWritable, NOT_WRITABLE_MESSAGE } from "./writable.ts";
-import { executeGeneration, modelFor, recordGeneration, type AppDeps, type GenerateView, type ProviderId } from "./execute.ts";
+import { executeGeneration, recordGeneration, type AppDeps, type GenerateView, type ProviderId } from "./execute.ts";
 import { generationCostText } from "./ledger.ts";
 import { MODEL as XAI_MODEL } from "./xai/adapter.ts";
 import { MODEL as GOOGLE_MODEL, PRO_MODEL as GOOGLE_PRO_MODEL } from "./google/adapter.ts";
@@ -146,7 +146,11 @@ export function subscribeRun(d: AppDeps, runId: string, fn: (ev: unknown) => voi
   if (!e) { e = new EventEmitter(); e.setMaxListeners(64); r.emitters.set(runId, e); }
   e.on("event", fn);
   const em = e;
-  return () => { em.off("event", fn); };
+  return () => {
+    em.off("event", fn);
+    // Prune so finished runs do not leak emitters; only if this is still the registered one.
+    if (em.listenerCount("event") === 0 && r.emitters.get(runId) === em) r.emitters.delete(runId);
+  };
 }
 
 async function executeJob(d: AppDeps, r: Runner, jobId: string): Promise<void> {

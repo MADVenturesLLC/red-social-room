@@ -4,8 +4,8 @@
 // send -> cost) -> store files -> DB rows. After a paid call the cost is already recorded in its own
 // transaction, so a failed image save never loses it (F16).
 import { isoNY } from "../../spike/lib/ledger.ts";
-import { generate as xaiGenerate, MODEL as XAI_MODEL, type XaiDeps, type CostInfo } from "./xai/adapter.ts";
-import { generate as googleGenerate, MODEL as GOOGLE_MODEL, type GoogleDeps, type GoogleOutcome } from "./google/adapter.ts";
+import { generate as xaiGenerate, type XaiDeps, type CostInfo } from "./xai/adapter.ts";
+import { generate as googleGenerate, type GoogleDeps, type GoogleOutcome } from "./google/adapter.ts";
 import { putImage, cropTo, StoreError, type StoredImage } from "./store.ts";
 import { checkWritable } from "./writable.ts";
 import { fmtUsd } from "./ledger.ts";
@@ -24,10 +24,6 @@ export interface AppDeps extends XaiDeps {
   googleKeys: KeyStore;
   googleKeyCheck: KeyCheckCache;
   googleBaseUrl?: string;
-}
-
-export function modelFor(provider: ProviderId): string {
-  return provider === "xai" ? XAI_MODEL : GOOGLE_MODEL;
 }
 
 export interface GenerateView {

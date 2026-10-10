@@ -283,8 +283,9 @@ test("FD:11 Nano Banana Pro card: its own model id goes out; cost uses Pro rates
   const [row] = ledgerRows(t.app);
   assert.equal(row.provider, "google");
   assert.equal(row.model, "gemini-3-pro-image");
-  assert.equal(row.estimate_micro_usd, 134000);
+  assert.equal(row.estimate_micro_usd, 250000);
   assert.equal(row.actual_micro_usd, toMicros((26 * 2 + 429 * 12 + 1120 * 120) / 1e6));
+  assert.ok(Number(row.actual_micro_usd) < Number(row.estimate_micro_usd), "the cap-safe reservation covers the token estimate");
   assert.equal(row.cost_source, "estimated_tokens");
 }));
 
