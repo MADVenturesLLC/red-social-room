@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { isoNY } from "../../spike/lib/ledger.ts";
 import type { DB } from "./db.ts";
 import type { ObjectStore } from "./r2.ts";
@@ -39,20 +40,37 @@ export function sha256Hex(b: Uint8Array): string {
   return createHash("sha256").update(b).digest("hex");
 }
 
-/** Every file under images/ (shape: images/<xx>/<sha256>.<ext>). Missing directory = none yet. */
+/** Every file under images/ (shape: images/<xx>/<sha256>.<ext>). Missing directory = none yet.
+ *  Review round: only regular files whose names are exactly the store's shape count — .part files from an
+ *  in-flight write, stray files and nested directories stay out (they are not part of the contract and
+ *  must never be uploaded or made the restore drill's problem). */
 export function walkImages(imagesDir: string): BackupFile[] {
   const out: BackupFile[] = [];
   if (!existsSync(imagesDir)) return out;
+  const SHARD_RE = /^[0-9a-f]{2}$/;
+  const NAME_RE = /^[0-9a-f]{64}\.(png|jpg|jpeg|webp)$/;
   for (const sub of readdirSync(imagesDir)) {
+    if (!SHARD_RE.test(sub)) continue;
     const dir = join(imagesDir, sub);
     let st; try { st = statSync(dir); } catch { continue; }
     if (!st.isDirectory()) continue;
     for (const name of readdirSync(dir)) {
+      if (!NAME_RE.test(name)) continue;
       const p = join(dir, name);
-      try { out.push({ rel: `images/${sub}/${name}`, key: `rsr/assets/${sub}/${name}`, bytes: statSync(p).size }); } catch { /* vanished mid-scan */ }
+      try { const f = statSync(p); if (!f.isFile()) continue; out.push({ rel: `images/${sub}/${name}`, key: `rsr/assets/${sub}/${name}`, bytes: f.size }); } catch { /* vanished mid-scan */ }
     }
   }
   return out;
+}
+
+/** The post/asset counts as of the snapshot file itself (never the live database, review round). */
+function countsIn(file: string): { posts: number; assets: number } {
+  const s = new DatabaseSync(file);
+  try {
+    const posts = (s.prepare("SELECT count(*) AS n FROM posts").get() as { n: number }).n;
+    const assets = (s.prepare("SELECT count(*) AS n FROM assets").get() as { n: number }).n;
+    return { posts, assets };
+  } finally { s.close(); }
 }
 
 /** NY wall-clock parts, for the nightly schedule guard (pure enough for tests with a fixed Date). */
@@ -115,14 +133,21 @@ export async function runBackup(d: BackupDeps): Promise<BackupResult> {
     const stagingDir = join(d.dataDir, "backup-tmp");
     mkdirSync(stagingDir, { recursive: true });
     const snapshot = join(stagingDir, `rsr-${Date.now()}.sqlite`);
-    try { rmSync(snapshot, { force: true }); } catch { /* absent */ }
-    const escaped = snapshot.replaceAll("'", "''");
-    d.db.exec(`VACUUM INTO '${escaped}'`);
-    const dbBuf = readFileSync(snapshot);
-    const dbSha = sha256Hex(dbBuf);
-    const dbKey = `rsr/db/${dbSha}.sqlite`;
-    await d.store.put(dbKey, dbBuf, "application/vnd.sqlite3");
-    rmSync(snapshot, { force: true });
+    let dbBuf: Buffer, dbSha: string, dbKey: string, counts: { posts: number; assets: number };
+    // Review round: the snapshot is removed in a finally even when the upload throws (a failed run must
+    // not leave a database-sized file behind to accumulate), and the counts are read from the snapshot.
+    try {
+      try { rmSync(snapshot, { force: true }); } catch { /* absent */ }
+      const escaped = snapshot.replaceAll("'", "''");
+      d.db.exec(`VACUUM INTO '${escaped}'`);
+      dbBuf = readFileSync(snapshot);
+      dbSha = sha256Hex(dbBuf);
+      dbKey = `rsr/db/${dbSha}.sqlite`;
+      counts = countsIn(snapshot);
+      await d.store.put(dbKey, dbBuf, "application/vnd.sqlite3");
+    } finally {
+      rmSync(snapshot, { force: true });
+    }
 
     // 2. Upload only image files not recorded as uploaded yet.
     const files = walkImages(d.imagesDir);
@@ -137,14 +162,13 @@ export async function runBackup(d: BackupDeps): Promise<BackupResult> {
     }
     const allFiles = d.db.prepare("SELECT rel, bytes FROM backup_files ORDER BY rel").all() as unknown as Array<{ rel: string; bytes: number }>;
 
-    // 3. The manifest: everything a restore needs, plus the counts the drill verifies.
-    const posts = (d.db.prepare("SELECT count(*) AS n FROM posts").get() as { n: number }).n;
-    const assets = (d.db.prepare("SELECT count(*) AS n FROM assets").get() as { n: number }).n;
+    // 3. The manifest: everything a restore needs, plus the counts the drill verifies — read from the
+    //    snapshot itself above, so the manifest can never describe a different set of rows than it names.
     const manifest = {
       v: 1,
       created_at: startedAt,
       db: { key: dbKey, sha256: dbSha, bytes: dbBuf.length },
-      counts: { posts, assets },
+      counts,
       files: allFiles.map((f) => ({ rel: f.rel, key: `rsr/assets/${f.rel.slice("images/".length)}`, bytes: f.bytes })),
     };
     const manifestBuf = Buffer.from(JSON.stringify(manifest), "utf8");

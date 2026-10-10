@@ -2,7 +2,7 @@
 // reuse (T:76), tag filters and post deletion. No network: the object store is a local directory.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,6 +129,7 @@ test("A7 nightly guard: once a day, first tick at/after 3 AM New York", () => {
 
 test("A7 restore drill: a backup restores onto a clean folder and verifies (and a missing manifest fails loudly)", async () => {
   const dir = tmp("rsr-a7-r1-"); const storeDir = tmp("rsr-a7-store3-"); const target = tmp("rsr-a7-target-");
+  const sd2 = tmp("rsr-a7-store4-"), sd3 = tmp("rsr-a7-store5-"), t3 = tmp("rsr-a7-target4-");
   try {
     const { db, p1, p2 } = seededDb(dir);
     seedImage(dir, "one"); seedImage(dir, "two");
@@ -150,7 +151,24 @@ test("A7 restore drill: a backup restores onto a clean folder and verifies (and 
     const empty = await restoreFrom(dirObjectStore(tmp("rsr-a7-empty-")), tmp("rsr-a7-target2-"));
     assert.equal(empty.ok, false);
     assert.ok(empty.problems.some((p) => /No manifest/.test(p)));
-  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(storeDir, { recursive: true, force: true }); rmSync(target, { recursive: true, force: true }); }
+    // Review round: a manifest without counts must not pass (v1 always carries them)...
+    const raw = JSON.parse(Buffer.from((await store.get("rsr/manifest.json"))!).toString("utf8")) as { files: unknown[] } & Record<string, unknown>;
+    const noCounts = { ...raw } as Record<string, unknown>;
+    delete noCounts.counts;
+    cpSync(storeDir, sd2, { recursive: true });
+    await dirObjectStore(sd2).put("rsr/manifest.json", Buffer.from(JSON.stringify(noCounts)));
+    const rep2 = await restoreFrom(dirObjectStore(sd2), tmp("rsr-a7-target3-"));
+    assert.equal(rep2.ok, false);
+    assert.ok(rep2.problems.some((p) => /counts/.test(p)), rep2.problems.join("; "));
+    // ...and a path outside the store's exact shape is refused before anything is written anywhere.
+    const evil = { ...raw, files: [{ rel: "../../evil.txt", key: "rsr/assets/xx/yy.txt", bytes: 3 }, ...raw.files] };
+    cpSync(storeDir, sd3, { recursive: true });
+    await dirObjectStore(sd3).put("rsr/manifest.json", Buffer.from(JSON.stringify(evil)));
+    const rep3 = await restoreFrom(dirObjectStore(sd3), t3);
+    assert.equal(rep3.ok, false);
+    assert.ok(rep3.problems.some((p) => /unexpected path/.test(p)), rep3.problems.join("; "));
+    assert.equal(existsSync(join(t3, "..", "evil.txt")), false, "nothing is written outside the clean target");
+  } finally { for (const d of [dir, storeDir, target, sd2, sd3, t3]) rmSync(d, { recursive: true, force: true }); }
 });
 
 test("A7 FTS (F17): a healthy index passes; a wiped index is detected, rebuilt, and logged", () => {
@@ -263,7 +281,7 @@ test("A7 R2 target: validated on save, secrets only in mode-600 files, status sh
   const dir = tmp("rsr-a7-c1-");
   try {
     const { db } = seededDb(dir);
-    mkdirSync(join(dir, "secrets"), { recursive: true });
+    // No secrets/ on purpose: the first save must create the store itself (review round).
     assert.throws(() => saveR2Config(db, dir, { endpoint: "https://example.com", bucket: "b", accessKeyId: "k".repeat(30), secretAccessKey: "s".repeat(30) }), R2ConfigError);
     assert.throws(() => saveR2Config(db, dir, { endpoint: "https://acct123.r2.cloudflarestorage.com", bucket: "Bad_Bucket", accessKeyId: "k".repeat(30), secretAccessKey: "s".repeat(30) }), R2ConfigError);
     const st = saveR2Config(db, dir, { endpoint: "https://acct123.r2.cloudflarestorage.com", bucket: "rsr-backup", accessKeyId: "AKIDEXAMPLE1234", secretAccessKey: "c2VjcmV0ZXhhbXBsZXNlY3JldGV4YW1wbGU=" });
@@ -272,6 +290,7 @@ test("A7 R2 target: validated on save, secrets only in mode-600 files, status sh
     const mode = (f: string) => (statSync(join(dir, "secrets", f)).mode & 0o777).toString(8);
     assert.equal(mode("r2_access_key_id"), "600");
     assert.equal(mode("r2_secret_access_key"), "600");
+    assert.equal((statSync(join(dir, "secrets")).mode & 0o777).toString(8), "700", "the store itself is created mode 700");
     const back = loadR2Config(db, dir);
     assert.equal(back?.bucket, "rsr-backup");
     assert.equal(back?.secretAccessKey, "c2VjcmV0ZXhhbXBsZXNlY3JldGV4YW1wbGU=");
@@ -281,13 +300,18 @@ test("A7 R2 target: validated on save, secrets only in mode-600 files, status sh
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("A7 backup: walkImages finds only real image files", () => {
+test("A7 backup: walkImages takes only content-addressed image files (strays, .part files and subdirectories stay out)", () => {
   const dir = tmp("rsr-a7-w1-");
   try {
-    seedImage(dir, "x");
-    writeFileSync(join(dir, "images", "stray.txt"), "not an image");
+    const sha = seedImage(dir, "x");
+    const shard = join(dir, "images", sha.slice(0, 2));
+    writeFileSync(join(dir, "images", "stray.txt"), "not an image");           // top level
+    writeFileSync(join(shard, `${"0".repeat(64)}.part`), "partial write");       // in-flight write
+    writeFileSync(join(shard, "notes.txt"), "junk");                             // stray in a shard
+    mkdirSync(join(shard, "nested"), { recursive: true });                       // directory in a shard
+    mkdirSync(join(dir, "images", "nothex"), { recursive: true });               // not a shard name
     const files = walkImages(join(dir, "images"));
-    assert.equal(files.length, 1);
+    assert.equal(files.length, 1, JSON.stringify(files));
     assert.match(files[0]!.rel, /^images\/[0-9a-f]{2}\/[0-9a-f]{64}\.jpg$/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

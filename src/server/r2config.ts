@@ -67,9 +67,12 @@ export function saveR2Config(db: DB, dataDir: string, input: { endpoint?: unknow
   if (accessKeyId && !KEY_ID_RE.test(accessKeyId)) throw new R2ConfigError("The access key id does not look like an R2 key (letters and digits).");
   if (secretAccessKey && !SECRET_RE.test(secretAccessKey)) throw new R2ConfigError("The secret access key does not look like an R2 secret.");
   const secrets = join(dataDir, "secrets");
+  // Review round: first-time setup creates the store itself — a fresh data directory has no secrets/,
+  // and the writable check above deliberately does not create it. Mode 700, like the provider-key store.
+  mkdirSync(secrets, { recursive: true, mode: 0o700 });
+  try { chmodSync(secrets, 0o700); } catch { /* best effort on an existing store */ }
   if (accessKeyId) writeSecret(join(secrets, KEY_ID_FILE), accessKeyId);
   if (secretAccessKey) writeSecret(join(secrets, SECRET_FILE), secretAccessKey);
-  try { mkdirSync(secrets, { recursive: true }); } catch { /* writeSecret already proved it */ }
   db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(ENDPOINT_KEY, endpoint);
   db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(BUCKET_KEY, bucket);
   return r2Status(db, dataDir);

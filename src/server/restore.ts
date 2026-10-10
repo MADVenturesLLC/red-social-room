@@ -40,6 +40,10 @@ export async function restoreFrom(store: ObjectStore, targetDir: string, opts: {
   let manifest: RestoreManifest;
   try { manifest = JSON.parse(Buffer.from(mb).toString("utf8")) as RestoreManifest; } catch (e) { report.problems.push(`Manifest is not readable JSON: ${(e as Error).message.slice(0, 120)}`); return report; }
   if (manifest.v !== 1 || !manifest.db?.key || !Array.isArray(manifest.files)) { report.problems.push("Manifest has an unexpected shape."); return report; }
+  // Review round: a v1 manifest always carries its counts; without them the drill cannot keep its promise
+  // (post/asset verification), so restore continues for diagnosis but the run is a failure either way.
+  const countsPresent = !!manifest.counts && Number.isInteger(manifest.counts.posts) && Number.isInteger(manifest.counts.assets);
+  if (!countsPresent) report.problems.push("Manifest has no post/asset counts — a v1 manifest must carry them to pass the drill.");
 
   // 1. The database.
   const dbBytes = await store.get(manifest.db.key);
@@ -52,7 +56,15 @@ export async function restoreFrom(store: ObjectStore, targetDir: string, opts: {
   writeFileSync(dbPath, dbBytes);
 
   // 2. Every file (content-addressed: its sha256 is its own name, so each download is checked strictly).
+  //    Review round: each path is validated against the store's exact shape BEFORE joining it to the
+  //    target, so a malformed or hostile manifest can never make the drill write outside the clean folder.
+  const REL_RE = /^images\/[0-9a-f]{2}\/[0-9a-f]{64}\.(png|jpg|jpeg|webp)$/;
+  const KEY_RE = /^rsr\/assets\/[0-9a-f]{2}\/[0-9a-f]{64}\.(png|jpg|jpeg|webp)$/;
   for (const f of manifest.files) {
+    if (!REL_RE.test(f.rel) || !KEY_RE.test(f.key)) {
+      report.problems.push(`Manifest lists an unexpected path: ${String(f.rel).slice(0, 120)}`);
+      continue;
+    }
     const buf = await store.get(f.key);
     if (!buf) { report.filesMissingInBackup++; report.problems.push(`Missing in backup: ${f.rel}`); continue; }
     report.filesDownloaded++;
@@ -80,7 +92,7 @@ export async function restoreFrom(store: ObjectStore, targetDir: string, opts: {
     report.problems.push(`The restored database could not be opened: ${(e as Error).message.slice(0, 160)}`);
   }
 
-  report.ok = report.problems.length === 0 && report.dbSha256Ok && report.filesMissingInBackup === 0 && (report.countsMatch ?? true);
+  report.ok = report.problems.length === 0 && report.dbSha256Ok && report.filesMissingInBackup === 0 && report.countsMatch === true;
   return report;
 }
 
