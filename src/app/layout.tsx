@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { getApp } from "../server/app.ts";
 import { unresolvedRows } from "../server/ledger.ts";
 import "./globals.css";
+import "./fonts.css";
 
 export const metadata = { title: "Red Social Room", robots: { index: false, follow: false } };
 export const viewport = { width: "device-width", initialScale: 1 };

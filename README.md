@@ -1,6 +1,6 @@
 # MADVentures Red Social Room
 
-Act 0 spike (see `spike-results/REPORT.md`), the A1 app, the A2 additions and the A3 edits/lineage additions (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
+Act 0 spike (see `spike-results/REPORT.md`), the A1 app, the A2 additions, the A3 edits/lineage additions and the A4 editor (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
 
 ## Requirements
 
@@ -83,6 +83,17 @@ A3 (Amendment 1 section 4: "unchanged, plus F13 and the compare-edit check"; the
 - **Your own images (F14)**: **Bring your own image** accepts PNG/JPEG/WebP up to 20 MB and 8,000 px a side; the browser checks first and offers "Resize to 4096 px and continue?" for larger ones, and the server re-checks everything before storing. Uploading is free (no provider call, no ledger row) and lands in the same content-addressed store (`images/<aa>/<sha256>.<ext>` plus an `assets` row).
 - **Use as reference**: take an uploaded or generated image into a *new* image - the image rides with your prompt in one single-turn call. Google takes it (`[text, image]` input; up to 14 reference images per the docs); **Grok takes no reference images**, so that button is disabled on the xAI card and the server refuses it with the reason - nothing is silently dropped.
 - **Data**: `db/rsr.sqlite` gains `generations.parent_asset_id` / `mask_asset_id` and `jobs.kind` / `parent_asset_id` (older databases migrate at start); lineage is read back from those links only (`src/server/lineage.ts`, `GET /api/lineage?id=<sha>`). Mask painting and the local ComfyUI creator wait on A0b (the GPU spike), per the plan's "if the GPU is ready".
+
+### A4: the deterministic editor
+
+A4 (TECH-PLAN-v1.md :80, :96-97, :211) is the canvas editor - crop, rotate, four colour sliders, text layers and Brand-kit logos, all in the browser, with **no model and no cost**:
+
+- **Open a design**: any Library image gets a **Design** link (`/design/<post>`). The editor renders from the post's *original* image plus its saved recipe, so nothing is ever re-done; "Save design" flattens the canvas to a PNG, uploads it through the normal F14 path, points the post at the render and stores the recipe (`posts.recipe`), keeping the untouched original as `posts.source_asset_id`.
+- **Recipe, not a destructive edit**: the recipe (`src/lib/recipe.ts`) is a small JSON document - crop box, rotation, slider values, text and logo layers - in relative coordinates, so the same recipe is valid at any resolution (a 4:5 crop stays 4:5; a headline stays where it was placed).
+- **What you can do**: crop with 1:1 / 4:5 / 16:9 / 9:16 presets or free-drag (Reset crop removes it); rotate in 90° steps; brightness / contrast / saturation / warmth sliders (-100…100, 0 = untouched); add text layers (fonts **Inter** and **Anton**, bundled locally from their OFL releases in `public/fonts/` with license texts - font, size, colour, stroke with its own colour, shadow) and drag them where you want; place Brand-kit logos, drag to move, corner handles to scale.
+- **Brand kit**: upload PNG/JPEG/WebP/SVG logos (up to 50, raster to the usual F14 limits, SVG to 1 MB). SVG is allowed *only* here - a logo is drawn on your canvas and never sent to a model. SVGs carrying scripts, event handlers, `<foreignObject>` or `javascript:` links are refused with the reason, and stored SVGs are served under `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` (`/api/assets/`, so opening the URL directly runs nothing). Removing a logo takes it out of the kit; the file stays in the content-addressed store.
+- **Reopen and change one thing**: the acceptance path - add a logo and headline, crop, adjust warmth, save, reopen, change the headline without redoing the rest - is covered over HTTP (the crop, the slider and the logo all stay).
+- The flatten step caps the output's longest side at 2,048 px (`FLATTEN_MAX_SIDE`), so even an 8,000 px upload never makes a giant PNG. Mask painting and the local ComfyUI creator still wait on A0b.
 
 ### Run it locally (no Docker)
 

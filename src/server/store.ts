@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import sharp from "sharp";
 import { inspectImage, sha256, type ImageInfo } from "../../spike/lib/image.ts";
 
-export const MIME: Readonly<Record<string, string>> = Object.freeze({ png: "image/png", jpeg: "image/jpeg", webp: "image/webp" });
+export const MIME: Readonly<Record<string, string>> = Object.freeze({ png: "image/png", jpeg: "image/jpeg", webp: "image/webp", svg: "image/svg+xml" });
 export const SHA_RE = /^[a-f0-9]{64}$/;
 
 export class StoreError extends Error {
@@ -35,18 +35,11 @@ export function relPathFor(id: string, ext: string): string {
   return join(/*turbopackIgnore: true*/ id.slice(0, 2), `${id}.${ext}`);
 }
 
-/** Write bytes into the store. Returns the asset descriptor; the DB row is the caller's job (after this returns). */
-export function putImage(imagesDir: string, buf: Buffer): StoredImage {
-  const info = inspectImage(buf);
-  if (info.format === "unknown") throw new StoreError("The image is not PNG, JPEG or WebP; not stored.");
-  const id = sha256(buf);
-  const ext = info.format === "jpeg" ? "jpg" : info.format;
-  const rel = relPathFor(id, ext);
-  const final = join(/*turbopackIgnore: true*/ imagesDir, rel);
+/** The write half of the store: temp file, fsync, rename, directory fsync. Never overwrites. */
+function writeBytes(imagesDir: string, id: string, ext: string, buf: Buffer): void {
   const dir = join(imagesDir, id.slice(0, 2));
-  const out: StoredImage = { id, relPath: rel, mime: MIME[info.format], width: info.width, height: info.height, bytes: buf.length, info };
-  if (existsSync(/*turbopackIgnore: true*/ final)) return out; // same bytes already stored; never overwrite
   const tmp = join(dir, `.${id}.${randomBytes(4).toString("hex")}.part`);
+  const final = join(/*turbopackIgnore: true*/ imagesDir, relPathFor(id, ext));
   let fd = -1;
   try {
     mkdirSync(dir, { recursive: true });
@@ -58,7 +51,6 @@ export function putImage(imagesDir: string, buf: Buffer): StoredImage {
     storeIo.renameSync(tmp, final);
     const dfd = openSync(dir, "r");
     try { storeIo.fsyncSync(dfd); } finally { closeSync(dfd); }
-    return out;
   } catch (e) {
     if (fd >= 0) { try { closeSync(fd); } catch { /* already failing */ } }
     try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* best effort */ }
@@ -66,6 +58,29 @@ export function putImage(imagesDir: string, buf: Buffer): StoredImage {
     const why = code === "ENOSPC" ? "disk full" : code === "EACCES" || code === "EROFS" || code === "EPERM" ? "data folder is not writable" : `I/O error${code ? ` (${code})` : ""}`;
     throw new StoreError(`Save failed: ${why} (${freeText(imagesDir)}).`);
   }
+}
+
+/** Write bytes into the store. Returns the asset descriptor; the DB row is the caller's job (after this returns). */
+export function putImage(imagesDir: string, buf: Buffer): StoredImage {
+  const info = inspectImage(buf);
+  if (info.format === "unknown") throw new StoreError("The image is not PNG, JPEG or WebP; not stored.");
+  const id = sha256(buf);
+  const ext = info.format === "jpeg" ? "jpg" : info.format;
+  const rel = relPathFor(id, ext);
+  const out: StoredImage = { id, relPath: rel, mime: MIME[info.format], width: info.width, height: info.height, bytes: buf.length, info };
+  if (existsSync(/*turbopackIgnore: true*/ join(imagesDir, rel))) return out; // same bytes already stored; never overwrite
+  writeBytes(imagesDir, id, ext, buf);
+  return out;
+}
+
+/** A4: store an SVG logo (Brand kit only; the caller has already run validateSvgLogo). No pixel size exists. */
+export function putSvg(imagesDir: string, buf: Buffer): StoredImage {
+  const id = sha256(buf);
+  const rel = relPathFor(id, "svg");
+  const out: StoredImage = { id, relPath: rel, mime: MIME.svg, width: null, height: null, bytes: buf.length, info: { format: "unknown", width: null, height: null, bytes: buf.length, sha256: id } };
+  if (existsSync(/*turbopackIgnore: true*/ join(imagesDir, rel))) return out;
+  writeBytes(imagesDir, id, "svg", buf);
+  return out;
 }
 
 /** A3: read a stored image back by its id + mime (the edit/reference source). Throws if the file is gone. */

@@ -6,7 +6,7 @@ export class LibraryError extends Error {
   constructor(message: string) { super(message); this.name = "LibraryError"; }
 }
 
-export interface PostRow { id: number; created_at: string; generation_id: string; asset_id: string; prompt: string; model: string; notes: string; width: number | null; height: number | null }
+export interface PostRow { id: number; created_at: string; generation_id: string; asset_id: string; prompt: string; model: string; notes: string; width: number | null; height: number | null; designed: number }
 
 export function savePost(db: DB, generationId: unknown, notes: unknown = ""): { id: number; already: boolean } {
   if (typeof generationId !== "string" || !/^[0-9a-f-]{36}$/.test(generationId)) throw new LibraryError("Unknown image.");
@@ -31,7 +31,7 @@ export function ftsQuery(q: string): string | null {
 export function searchPosts(db: DB, q: unknown, limit = 60): PostRow[] {
   const text = typeof q === "string" ? q.slice(0, 200) : "";
   const fq = ftsQuery(text);
-  const cols = "p.id, p.created_at, p.generation_id, p.asset_id, p.prompt, p.model, p.notes, a.width, a.height";
+  const cols = "p.id, p.created_at, p.generation_id, p.asset_id, p.prompt, p.model, p.notes, a.width, a.height, (p.recipe IS NOT NULL) AS designed";
   if (!fq) return db.prepare(`SELECT ${cols} FROM posts p JOIN assets a ON a.id = p.asset_id ORDER BY p.id DESC LIMIT ?`).all(limit) as unknown as PostRow[];
   return db.prepare(`SELECT ${cols} FROM posts_fts f JOIN posts p ON p.id = f.rowid JOIN assets a ON a.id = p.asset_id WHERE posts_fts MATCH ? ORDER BY bm25(posts_fts), p.id DESC LIMIT ?`).all(fq, limit) as unknown as PostRow[];
 }

@@ -18,6 +18,8 @@ COPY --from=build /app/package.json /app/next.config.mjs ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/config ./config
+# A4: the bundled editor fonts (public/fonts, OFL) are served from here.
+COPY --from=build /app/public ./public
 # The 10 spike rows are imported into the spend ledger on first start (Amendment 1 item 18; the A1 smoke-call
 # seed row is bundled into .next, A1 pin 14).
 COPY --from=build /app/spike-results/ledger.json ./spike-results/ledger.json
