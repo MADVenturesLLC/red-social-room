@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "tones": [
+    {
+      "id": "mad-confident",
+      "label": "MAD Ventures confident",
+      "direction": "Confident and ambitious, MAD Ventures style: short declarative sentences, forward momentum, no hype words like 'game-changing'."
+    },
+    {
+      "id": "casual",
+      "label": "Casual",
+      "direction": "Relaxed and conversational, like texting a friend. Contractions are fine; at most one emoji."
+    },
+    {
+      "id": "educational",
+      "label": "Educational",
+      "direction": "Teaches one clear thing. Plain language, one idea per sentence, no jargon."
+    },
+    {
+      "id": "playful",
+      "label": "Playful",
+      "direction": "Playful, with wordplay or light humor, while still clear about the point."
+    }
+  ]
+}

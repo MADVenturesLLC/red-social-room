@@ -50,3 +50,7 @@ td, th { border-bottom: 1px solid var(--bg2); padding: .3rem; text-align: left; 
 .mini { font-size: .8rem; }
 .danger-link { background: none; border: 0; color: var(--red); cursor: pointer; padding: 0; }
 input[type="color"] { width: 42px; height: 28px; padding: 2px; border: 1px solid var(--bg2); border-radius: 6px; background: transparent; }
+
+/* A5: captions. */
+.counter { font-variant-numeric: tabular-nums; font-size: .8rem; white-space: nowrap; }
+.counter.over { color: var(--red); font-weight: 600; }
