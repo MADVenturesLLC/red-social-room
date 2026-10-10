@@ -14,6 +14,7 @@ import { checkKey, type KeyCheckCache } from "./xai/adapter.ts";
 import { checkGoogleKey } from "./google/adapter.ts";
 import { googleDepsOf } from "./execute.ts";
 import { resetStrandedJobs } from "./runs.ts";
+import { startScheduler } from "./scheduler.ts";
 import type { AppDeps } from "./generate.ts";
 
 /** Test-only override of an API base URL. Accepted only for a loopback http URL, so a stray env value
@@ -67,6 +68,9 @@ export function getApp(): AppDeps {
     log: (m) => console.log(`[rsr] ${new Date().toISOString()} ${keys.scrub(googleKeys.scrub(m))}`),
   };
   g.__rsrApp = app;
+  // A7: the in-process nightly job (backup at 3 AM New York; a daily search-index check). Tests build their
+  // AppDeps directly, so this only ever runs in a real server. RSR_DISABLE_SCHEDULER=1 turns it off.
+  if (process.env.RSR_DISABLE_SCHEDULER !== "1") startScheduler({ db: app.db, dataDir: dir, imagesDir: join(dir, "images"), log: app.log });
   // Rows left `reserved` by a previous process were in flight when it stopped (Argus L2): list them as unresolved.
   const interrupted = markInterrupted(app.db);
   if (interrupted > 0) app.log?.(`marked ${interrupted} interrupted reservation(s) unresolved at start`);

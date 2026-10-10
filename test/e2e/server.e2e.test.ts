@@ -329,7 +329,7 @@ test("Argus L1 on f63676e: a second server on the same data directory refuses to
   const reservedBefore = rowsOf().filter((r) => r.status === "reserved");
   assert.equal(reservedBefore.length, 1, "the slow call's row is reserved while xAI holds the answer");
 
-  const port2 = port + 600;
+  const port2 = await freePort();
   const second = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(port2), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env: startEnv, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   second.stdout?.on("data", (c) => { out += c; }); second.stderr?.on("data", (c) => { out += c; });
@@ -488,6 +488,21 @@ test("Argus L1 on 3bbbe97: images/ cannot be listed (0333) - a paid POST returns
   assert.deepEqual(readdirSync(images, { recursive: true }).map(String).sort(), files, "no new image or probe file");
 });
 
+/** An unused localhost port, asked from the OS at run time (a fixed offset once collided with a local
+ *  service on this box; nothing here depends on the number). */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = createServer();
+    s.on("error", reject);
+    s.listen(0, "127.0.0.1", () => {
+      const a = s.address();
+      if (typeof a !== "object" || !a) { s.close(); reject(new Error("no port")); return; }
+      const port = a.port;
+      s.close(() => resolve(port));
+    });
+  });
+}
+
 /** Start `next start` and wait for it to exit (at most ~30 s); returns the exit code (undefined if it kept running) and its output. */
 async function startAndAwaitExit(env: NodeJS.ProcessEnv, p: number): Promise<{ code: number | null | undefined; out: string }> {
   const child = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(p), "-H", "127.0.0.1"], { cwd: REPO_ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -523,11 +538,10 @@ test("A1 pin 19 (d), line 370 (Argus L1 and L3 on 0e2f1f4): starting the server 
   chmodSync(join(lockRo, "rsr.lock"), 0o444); // only the lock file; the directory, db/ and images/ stay writable
   restores.push(() => chmodSync(join(lockRo, "rsr.lock"), lockMode));
   try {
-    let k = 0;
     for (const [label, dir, names] of [["new, empty, 0555", fresh, join(fresh, "rsr.lock")], ["left by a previous run, 0555/0444", used, join(used, "rsr.lock")],
       ["writable, but rsr.lock 0444", lockRo, join(lockRo, "rsr.lock")], ["missing, under a 0555 parent", missing, `cannot create or write ${missing}, EACCES`]] as const) {
       const providerCalls = mockSeen.length;
-      const { code, out } = await startAndAwaitExit({ ...startEnv, RSR_DATA_DIR: dir }, port + 700 + k++);
+      const { code, out } = await startAndAwaitExit({ ...startEnv, RSR_DATA_DIR: dir }, await freePort());
       assert.equal(code, 1, `${label}: the server must exit 1:\n${out}`);
       assert.match(out, /refusing to start: The data directory is not writable: /, label);
       assert.ok(out.includes(names), `${label}: names ${names}:\n${out}`);
@@ -1011,6 +1025,76 @@ test("A6 acceptance over HTTP: exact-size renditions, AI extend (aspect_ratio, z
   assert.ok(zipBuf.includes(Buffer.from("A kite over a winter field — prints soon.", "utf8")), "captions.txt carries the saved caption");
   const lib = await record("GET /library (A6 links)", await fetch(`${base}/library`));
   assert.match(lib, new RegExp(`/export/${postId}`));
+});
+
+test("A7 over HTTP: tags filter the Library, snippets save and insert, a post reuses and deletes, and the backup + index tools answer", async () => {
+  // Two library posts (the shared mock answers both creates).
+  const g1 = JSON.parse(await record("POST /api/generate (A7-1)", await post("/api/generate", { prompt: "A7 tagtarget: red bicycle by the canal", ratio: "4:5" })));
+  assert.equal(g1.status, "ok", JSON.stringify(g1));
+  const p1 = JSON.parse(await record("POST /api/library (A7-1)", await post("/api/library", { generationId: g1.generationId })));
+  const g2 = JSON.parse(await record("POST /api/generate (A7-2)", await post("/api/generate", { prompt: "A7 second image: green kite in the park", ratio: "1:1" })));
+  assert.equal(g2.status, "ok", JSON.stringify(g2));
+  const p2 = JSON.parse(await record("POST /api/library (A7-2)", await post("/api/library", { generationId: g2.generationId })));
+  // Tag the first post directly (the caption flow usually suggests tags; the filter itself is what this proves).
+  const db = new DatabaseSync(join(dataDir, "db", "rsr.sqlite"));
+  const tag = Number(db.prepare("INSERT INTO tags (name, created_at) VALUES ('a7-cats', '2026-10-10')").run().lastInsertRowid);
+  db.prepare("INSERT INTO post_tags (post_id, tag_id) VALUES (?, ?)").run(p1.id, tag);
+  db.close();
+  const strip = (s: string) => s.replace(/<!--.*?-->/g, "");
+  const filtered = await record("GET /library?tag=a7-cats", await fetch(`${base}/library?tag=a7-cats`));
+  assert.match(filtered, /red bicycle by the canal/);
+  assert.doesNotMatch(strip(filtered), /green kite in the park/);
+  assert.match(strip(filtered), /a7-cats \(1\)/);
+  assert.match(filtered, /data-tag="a7-cats" data-active="1"/);
+  const all = await record("GET /library", await fetch(`${base}/library`));
+  assert.match(all, /green kite in the park/);
+  // Snippets: save, see it on the create page, list it over HTTP, remove it.
+  const sn = JSON.parse(await record("POST /api/snippets", await post("/api/snippets", { text: "warm light, soft grain" }))) as { snippet?: { id: number } };
+  assert.ok(sn.snippet && sn.snippet.id > 0, JSON.stringify(sn));
+  const snList = JSON.parse(await record("GET /api/snippets", await fetch(`${base}/api/snippets`))) as { snippets: Array<{ text: string }> };
+  assert.equal(snList.snippets.length, 1);
+  const createPage = await record("GET / (snippets)", await fetch(`${base}/`));
+  assert.match(createPage, /warm light, soft grain/);
+  assert.match(createPage, /data-snippets/);
+  const del = await fetch(`${base}/api/snippets?id=${sn.snippet.id}`, { method: "DELETE", headers: { "Content-Type": "application/json", "x-rsr": "1" } });
+  assert.equal(del.status, 200);
+  const snGone = JSON.parse(await record("GET /api/snippets (after delete)", await fetch(`${base}/api/snippets`))) as { snippets: unknown[] };
+  assert.equal(snGone.snippets.length, 0);
+  // Reuse: the create page comes back with the post's prompt and model filled in.
+  const reusePage = await record("GET /?reuse", await fetch(`${base}/?reuse=${p1.id}`));
+  assert.match(reusePage, /Reusing post #/);
+  assert.match(reusePage, /red bicycle by the canal/);
+  // Delete the second post; it leaves the Library and the search.
+  const del2 = JSON.parse(await record("POST /api/posts/delete", await post("/api/posts/delete", { id: p2.id }))) as { ok?: boolean };
+  assert.equal(del2.ok, true);
+  const gone = await record("GET /library (after delete)", await fetch(`${base}/library`));
+  assert.doesNotMatch(gone, /green kite in the park/);
+  assert.ok(!gone.includes(`data-post-id="${p2.id}"`), "the deleted post's card is gone");
+  // A phrase only the deleted post had ("kite" alone also matches an older test's post).
+  const zero = await record("GET /library?q=green+kite", await fetch(`${base}/library?q=green+kite`));
+  assert.match(strip(zero), /0 images/);
+  // Backup status says "not set up yet" and runs nothing; the create button refuses with the reason.
+  const bs = JSON.parse(await record("GET /api/backup/status", await fetch(`${base}/api/backup/status`))) as { r2: { configured: boolean }; summary: { never: boolean; banner: boolean }; rows: unknown[] };
+  assert.equal(bs.r2.configured, false);
+  assert.equal(bs.summary.never, true);
+  assert.equal(bs.summary.banner, true);
+  assert.equal(bs.rows.length, 0);
+  const runRes = await fetch(`${base}/api/backup/run`, { method: "POST", headers: { "Content-Type": "application/json", "x-rsr": "1" }, body: "{}" });
+  assert.equal(runRes.status, 400);
+  const runBody = JSON.parse(await record("POST /api/backup/run (unset)", runRes)) as { error?: string };
+  assert.match(runBody.error ?? "", /not set up/);
+  // The search-index check and rebuild both answer with a report.
+  const ftsR = JSON.parse(await record("POST /api/maintenance/fts check", await post("/api/maintenance/fts", { action: "check" }))) as { report: { integrityOk: boolean; indexed: number } };
+  assert.equal(ftsR.report.integrityOk, true);
+  assert.ok(ftsR.report.indexed >= 1);
+  const rebuild = JSON.parse(await record("POST /api/maintenance/fts rebuild", await post("/api/maintenance/fts", { action: "rebuild" }))) as { action: string; report: { integrityOk: boolean } };
+  assert.equal(rebuild.action, "rebuild");
+  assert.equal(rebuild.report.integrityOk, true);
+  // Settings shows the backup section with its red banner (never backed up) and the index section.
+  const settings = await record("GET /settings (A7)", await fetch(`${base}/settings`));
+  assert.match(settings, /Backup \(nightly to Cloudflare R2\)/);
+  assert.match(settings, /data-testid="backup-banner"/);
+  assert.match(settings, /Search index/);
 });
 
 test("no response body or header, and no built browser file, contains any key (full, base64, or 12-char fragment)", async () => {

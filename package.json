@@ -20,6 +20,7 @@
     "ledger:init": "node spike/check-node.mjs && node spike/ledger-init.ts",
     "ledger:reconcile": "node spike/check-node.mjs && node spike/ledger-reconcile.ts",
     "preflight": "node spike/check-node.mjs && node spike/preflight.ts",
+    "restore-drill": "node spike/check-node.mjs && node scripts/restore-drill.mjs",
     "spike:xai": "node spike/check-node.mjs && node spike/xai.ts",
     "spike:gemini": "node spike/check-node.mjs && node spike/gemini.ts",
     "test:e2e": "node spike/check-node.mjs && node --disable-warning=ExperimentalWarning --test \"test/e2e/*.e2e.test.ts\""
@@ -31,6 +32,7 @@
     "typescript": "5.9.3"
   },
   "dependencies": {
+    "aws4fetch": "1.0.20",
     "konva": "10.7.1",
     "next": "16.4.0",
     "react": "19.3.0",

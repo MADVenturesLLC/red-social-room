@@ -1,6 +1,6 @@
 # MADVentures Red Social Room
 
-Act 0 spike (see `spike-results/REPORT.md`), the A1 app, the A2 additions, the A3 edits/lineage additions, the A4 editor, the A5 captions and the A6 export (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
+Act 0 spike (see `spike-results/REPORT.md`), the A1 app, the A2 additions, the A3 edits/lineage additions, the A4 editor, the A5 captions, the A6 export and the A7 library/backup work (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
 
 ## Requirements
 
@@ -115,6 +115,21 @@ A6 (TECH-PLAN-v1.md :218-220, sections 5-6; amendment items 9, 10, 24) turns one
 - **Safe zone**: the Instagram Story preview draws the 1080×1610 safe-zone box.
 - **AI extend (Nano Banana 2)** (D3, item 9): when a crop would cut the subject, one paid Google edit widens to the platform's ratio (`response_format.aspect_ratio` + the image inline), stored with method `ai_extend` and put through the same exact-size step. Grok is never used for widening. A refusal shows Google's real text; the fallback slot follows the `outpaintFallback` switch (**P3 ruled B on 2026-10-10, FD:12 — "No fallback on this computer yet. Crop instead?"; local ComfyUI arrives with A0b**).
 - **Download ZIP**: one image per ticked platform plus a `captions.txt` built from the saved captions (hashtags and alt included; platforms without a caption say so). Missing renditions stop the export with the platform named.
+
+### A7: Library polish, backup, and the success test
+
+A7 (TECH-PLAN-v1.md :222-224; amendment F17/F23 and FD:6) adds:
+
+- **Tag filters** on the Library: a row of tag chips (with counts) beside the search box; cards show their tags, and `?tag=` combines with the search word.
+- **Reuse** on every card: opens the create box with that post's prompt and model already filled in (`/?reuse=<post>`).
+- **Recent prompts and snippets** (T:76): the last five prompts appear as chips under the prompt box; **Save as snippet** stores the current prompt and every snippet can be inserted with one click or removed with its × .
+- **Delete** (housekeeping): removes a post's rows — its captions, tags and renditions — while every image file stays on disk, because other posts may share them.
+- **Nightly backup to Cloudflare R2** (FD:6): the app itself runs the job once a night, in the first tick at/after 3 AM New York (no cron, no external timer; `RSR_DISABLE_SCHEDULER=1` turns it off). A run snapshots the database (`VACUUM INTO`), uploads only image files that have not been uploaded before (the store is content-addressed, so a file never changes under its name), and writes a manifest (`rsr/manifest.json`) that lists everything a restore needs. **Back up now** runs the same job on demand. Settings shows the last good backup and turns a red banner when there is none or it is older than 48 hours (F23). The target — endpoint, bucket, access key id, secret — lives in Settings → Backup; the two keys are stored as mode-600 files, exactly like the provider keys, and only the key's last 4 shown back.
+- **The restore drill**: `node scripts/restore-drill.mjs` pulls the newest backup into a clean folder (or `--from-dir <tree>` from a local copy), verifies the database's sha256, every file byte-for-byte against the hash in its name, and the restored row counts, then prints PASS/FAIL. This is the plan's acceptance: a restore from backup onto a clean folder brings the library back.
+- **Search index (F17)**: the scheduler checks the index against the posts table once a day and rebuilds it automatically if they differ (logged to Maintenance); Settings has **Check** and **Rebuild** buttons for peace of mind.
+- **The success test**: the plan's real acceptance is a full week of posts (7) without opening another app. It starts once this act is deployed — it is Michael's week, not a test the machine can run for him.
+
+One manual step stays in Settings → Spend: entering the Google console total for the month (the A0 close-out item 21 reconcile).
 
 ### Run it locally (no Docker)
 
