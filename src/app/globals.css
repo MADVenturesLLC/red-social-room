@@ -54,3 +54,13 @@ input[type="color"] { width: 42px; height: 28px; padding: 2px; border: 1px solid
 /* A5: captions. */
 .counter { font-variant-numeric: tabular-nums; font-size: .8rem; white-space: nowrap; }
 .counter.over { color: var(--red); font-weight: 600; }
+
+/* A6: export + renditions. */
+.rel { position: relative; display: block; max-width: 100%; }
+.rel img { display: block; width: 100%; height: auto; border-radius: 6px; }
+.rel.cropview { display: inline-block; }
+.rel.cropper { overflow: hidden; border-radius: 6px; }
+.frame { position: absolute; border: 2px dashed var(--red); box-shadow: 0 0 0 9999px rgba(0, 0, 0, .45); cursor: move; touch-action: none; }
+.safe { position: absolute; border: 1px dashed rgba(255, 255, 255, .85); pointer-events: none; }
+.pill { display: inline-block; border: 1px solid var(--bg2); border-radius: 999px; padding: 0 .5rem; font-size: .75rem; }
+.pill.ai { border-color: var(--red); color: var(--red); }

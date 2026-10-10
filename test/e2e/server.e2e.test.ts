@@ -88,6 +88,7 @@ function childEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
 let editJpegPool: Buffer[] = [];
 let editIdx = 0;
 let uploadN = 0;
+let widenJpeg: Buffer = Buffer.alloc(0);
 
 async function record(what: string, res: Response): Promise<string> {
   const text = await res.text();
@@ -102,6 +103,7 @@ const post = (path: string, body: unknown, headers: Record<string, string> = { "
 before(async () => {
   const jpeg = await sampleJpeg();
   editJpegPool = await Promise.all([0, 1, 2, 3, 4, 5, 6, 7].map((i) => sharp({ create: { width: 48, height: 48, channels: 3, background: { r: (40 + i * 25) % 256, g: 70, b: 140 } } }).jpeg().toBuffer()));
+  widenJpeg = await sharp({ create: { width: 640, height: 360, channels: 3, background: { r: 200, g: 120, b: 60 } } }).jpeg().toBuffer();
   mock = createServer((req, res) => {
     const entry = { path: req.url ?? "", auth: req.headers.authorization, googleAuth: typeof req.headers["x-goog-api-key"] === "string" ? req.headers["x-goog-api-key"] : undefined, body: "" };
     mockSeen.push(entry);
@@ -144,6 +146,14 @@ before(async () => {
             tags: ["winterdrop", "cabin"],
           };
           return res.end(JSON.stringify({ id: "int-cap-e2e", status: "completed", model: "gemini-3.1-flash-lite", steps: [{ type: "model_output", content: [{ type: "text", text: JSON.stringify(capPayload) }] }], usage: { total_input_tokens: 4096, total_output_tokens: 800, total_thought_tokens: 0 } }));
+        }
+        // A6 item 9: the widen path. "fill a 1:1 frame" mock-refuses; "fill a 16:9 frame" returns a 16:9 image.
+        if (body.includes("fill a 1:1 frame")) {
+          return res.end(JSON.stringify({ id: "int-widen-refuse", status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: "I can't extend that safely." }] }], usage: { total_input_tokens: 26, total_output_tokens: 7, total_thought_tokens: 0 } }));
+        }
+        if (body.includes("fill a 16:9 frame")) {
+          res.setHeader("x-request-id", "req-e2e-widen");
+          return res.end(JSON.stringify({ id: "int-widen-e2e", status: "completed", model: "gemini-3.1-flash-image", steps: [{ type: "model_output", content: [{ type: "image", mime_type: "image/jpeg", data: widenJpeg.toString("base64") }] }], usage: { total_input_tokens: 26, total_output_tokens: 1549, total_thought_tokens: 0, output_tokens_by_modality: [{ modality: "image", tokens: 1120 }, { modality: "text", tokens: 429 }] } }));
         }
         if (body.includes("google-503")) { res.statusCode = 503; return res.end("oops"); }
         if (body.includes("google-refuse")) {
@@ -939,6 +949,68 @@ test("A5 over HTTP: an unreadable caption reply is reported, still billed, and n
   assert.equal(r.cost?.micros, 100, "the unreadable reply still settles what it used (100 in x $0.25/M + 50 out x $1.50/M)");
   const after = mockSeen.filter((m) => m.path === "/v1beta/interactions" && m.body.includes("gemini-3.1-flash-lite")).length;
   assert.equal(after, before + 1, "exactly one call - no automatic retry");
+});
+
+test("A6 acceptance over HTTP: exact-size renditions, AI extend (aspect_ratio, zero xAI), the refusal + no-fallback, and the ZIP with captions.txt", async () => {
+  const g = JSON.parse(await record("POST /api/generate (A6)", await post("/api/generate", { prompt: "a kite over a winter field", ratio: "4:5" }))) as { status: string; generationId: string };
+  assert.equal(g.status, "ok", JSON.stringify(g));
+  const saved = JSON.parse(await record("POST /api/library (A6)", await post("/api/library", { generationId: g.generationId }))) as { id: number };
+  const postId = saved.id;
+
+  // Item 24: exact pixels, both mandated cases.
+  const r1 = JSON.parse(await record("POST /api/renditions (instagram-portrait)", await post("/api/renditions", { postId, presetId: "instagram-portrait" }))) as { ok: boolean; rendition: { assetId: string; width: number; height: number; bytes: number; upscaledFrom: number } };
+  assert.equal(r1.ok, true);
+  assert.equal(r1.rendition.width, 1080);
+  assert.equal(r1.rendition.height, 1350);
+  const meta1 = await sharp(Buffer.from(await (await fetch(`${base}/api/assets/${r1.rendition.assetId}`)).arrayBuffer())).metadata();
+  assert.equal(meta1.width, 1080);
+  assert.equal(meta1.height, 1350);
+  const r2 = JSON.parse(await record("POST /api/renditions (youtube)", await post("/api/renditions", { postId, presetId: "youtube" }))) as { ok: boolean; rendition: { assetId: string; bytes: number; width: number; height: number } };
+  assert.equal(r2.ok, true);
+  assert.equal(r2.rendition.width, 1280);
+  assert.equal(r2.rendition.height, 720);
+  assert.ok(r2.rendition.bytes < 2097152, `YouTube file is ${r2.rendition.bytes} bytes (under 2 MB)`);
+  const meta2 = await sharp(Buffer.from(await (await fetch(`${base}/api/assets/${r2.rendition.assetId}`)).arrayBuffer())).metadata();
+  assert.equal(meta2.width, 1280);
+  assert.equal(meta2.height, 720);
+
+  // Item 9: AI extend with the target ratio, zero xAI calls.
+  const xaiEditsBefore = mockSeen.filter((m) => m.path === "/v1/images/edits").length;
+  const w = JSON.parse(await record("POST /api/renditions/widen (x)", await post("/api/renditions/widen", { postId, presetId: "x" }))) as { ok: boolean; kind: string; rendition: { assetId: string; width: number; height: number; method: string; note: string } };
+  assert.equal(w.ok, true, JSON.stringify(w));
+  assert.equal(w.kind, "ok");
+  assert.equal(w.rendition.method, "ai_extend");
+  assert.equal(w.rendition.note, "AI extend (Nano Banana 2)");
+  assert.equal(w.rendition.width, 1280);
+  assert.equal(w.rendition.height, 720);
+  const widenReq = mockSeen.filter((m) => m.path === "/v1beta/interactions" && m.body.includes("fill a 16:9 frame"));
+  assert.equal(widenReq.length, 1, "one Google request for the widen");
+  assert.ok(widenReq[0].body.includes('"aspect_ratio":"16:9"'), "the target ratio rides on the request");
+  assert.equal(mockSeen.filter((m) => m.path === "/v1/images/edits").length, xaiEditsBefore, "zero xAI requests for widening");
+
+  // Item 9 refusal: the real refusal shows and the fallback that exists is offered (P3: none on this computer).
+  const wr = JSON.parse(await record("POST /api/renditions/widen (refusal)", await post("/api/renditions/widen", { postId, presetId: "instagram-square" }))) as { ok: boolean; kind: string; message: string; fallback: string };
+  assert.equal(wr.ok, false);
+  assert.equal(wr.kind, "refused");
+  assert.match(wr.message, /Refused by Google|no image/i);
+  assert.equal(wr.fallback, "none", "P3 interim: no fallback on this computer");
+
+  // The ZIP: one exact-size image per platform plus captions.txt.
+  const savedCap = await post("/api/captions/save", { postId, platform: "instagram", text: "A kite over a winter field — prints soon.", hashtags: "ventures winter", altText: "A kite in a pale sky." });
+  assert.equal(savedCap.status, 200);
+  await record("POST /api/captions/save (A6)", savedCap);
+  const zipRes = await fetch(`${base}/api/export`, { method: "POST", headers: { "Content-Type": "application/json", "x-rsr": "1" }, body: JSON.stringify({ postId, presets: ["instagram-portrait", "x", "youtube"] }) });
+  assert.equal(zipRes.status, 200);
+  assert.equal(zipRes.headers.get("content-type"), "application/zip");
+  assert.match(zipRes.headers.get("content-disposition") ?? "", new RegExp(`filename="red-social-room-post-${postId}-export.zip"`));
+  const zipBuf = Buffer.from(await zipRes.arrayBuffer());
+  transcript.push({ what: "POST /api/export", text: `zip ${zipBuf.length} bytes` });
+  assert.equal(zipBuf.subarray(0, 4).toString("latin1"), "PK\x03\x04");
+  const zipText = zipBuf.toString("latin1");
+  for (const name of ["instagram-portrait.jpg", "x.jpg", "youtube.jpg", "captions.txt"]) assert.ok(zipText.includes(name), `zip carries ${name}`);
+  assert.ok(zipBuf.includes(Buffer.from("A kite over a winter field — prints soon.", "utf8")), "captions.txt carries the saved caption");
+  const lib = await record("GET /library (A6 links)", await fetch(`${base}/library`));
+  assert.match(lib, new RegExp(`/export/${postId}`));
 });
 
 test("no response body or header, and no built browser file, contains any key (full, base64, or 12-char fragment)", async () => {

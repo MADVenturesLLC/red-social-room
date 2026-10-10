@@ -17,3 +17,7 @@
 ## Added 2026-10-04, 3:15 AM ET (Michael, in Surface's chat)
 
 11. Google image roster: Nano Banana 2 (`gemini-3.1-flash-image`, about $0.067 per 1K image) is the default Google creator, and Nano Banana Pro (`gemini-3-pro-image`, about $0.134 per 1K/2K image) joins the roster as its own creator card that Michael can turn on or use to redo an image. Nano Banana 2 Lite is not on the roster. Both models share the one Google key and the one shared $50 monthly cap. Gemini 3.1 Flash-Lite stays only as the text model for the real-person prompt check and captions, and it never makes images. Prices are from TECH-PLAN-v1.md section 2 (https://ai.google.dev/gemini-api/docs/pricing). Pro's model id and price should be confirmed in the Act 1 Gemini adapter work.
+
+## Added 2026-10-10 (Michael, live session)
+
+12. P3 (widen fallback, D3 / amendment item 9): **option B — no third provider.** When "AI extend (Nano Banana 2)" is refused or fails, the tile shows Google's real error and "No fallback on this computer yet. Crop instead?"; local ComfyUI outpaint arrives with A0b (FD:4). Config `outpaintFallback` stays `"none"` (that value is now the ruling, not an interim default). Michael answered with one word: "B", after the strategist's one-line recommendation. Amendment 1 section 2.2 P3 is now decided.

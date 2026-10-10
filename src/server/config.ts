@@ -20,6 +20,8 @@ export type XaiDataRetention = "default_30_days" | "zdr";
 export type XaiQuality = "measured_defaults";
 /** P5: output resolution. A1 builds option A only (every request asks for 1K). */
 export type FinalResolution = "1k_upscale";
+/** P3: which widen fallback exists (item 9). "none" until Michael rules; "recraft" once a Recraft adapter exists. */
+export type OutpaintFallback = "none" | "recraft";
 
 export interface Switches {
   promptCheck: PromptCheckConfig;
@@ -27,6 +29,7 @@ export interface Switches {
   xaiDataRetention: XaiDataRetention;
   xaiQuality: XaiQuality;
   finalResolution: FinalResolution;
+  outpaintFallback: OutpaintFallback;
 }
 
 export class ConfigError extends Error {
@@ -51,6 +54,9 @@ export function parseSwitches(raw: unknown): Switches {
     xaiDataRetention: oneOf(o.xaiDataRetention, ["default_30_days", "zdr"] as const, "xaiDataRetention"),
     xaiQuality: oneOf(o.xaiQuality, ["measured_defaults"] as const, "xaiQuality"),
     finalResolution: oneOf(o.finalResolution, ["1k_upscale"] as const, "finalResolution"),
+    // P3 is still pending: the interim default is "none" (the tile says no fallback exists on this
+    // computer). When Michael rules A or C, "recraft" becomes selectable and a Recraft adapter ships.
+    outpaintFallback: oneOf(o.outpaintFallback ?? "none", ["none", "recraft"] as const, "outpaintFallback"),
   });
 }
 
