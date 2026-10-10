@@ -7,6 +7,12 @@
       "read_on": "2026-10-03" },
     { "provider": "xai", "model": "grok-imagine-image-2.0", "kind": "edit", "resolution": "1k", "quality": "medium", "usd": 0.07,
       "source": "observed bill, 2 of 2 edits (spike-results/xai/02-edit-background-red.json, 03-edit-aspect-16x9.json). Not used in A1 (no edit yet).",
+      "read_on": "2026-10-03" },
+    { "provider": "google", "model": "gemini-3-pro-image", "kind": "generate", "resolution": "1k", "quality": null, "usd": 0.25,
+      "source": "FD:11 roster card (Nano Banana Pro); https://ai.google.dev/gemini-api/docs/pricing (read 2026-10-09): image output $120/1M tokens, 1120 tokens per 1K/2K image = about $0.134. This cap-safe reservation adds headroom for input ($2/M) and text/thinking ($12/M) tokens (about 9.6k thinking tokens), so the cap check never under-reserves the token-estimated settle (review fix: a $0.134 row under-reserved the spike-shaped usage, which prices at about $0.1396)",
+      "read_on": "2026-10-09" },
+    { "provider": "google", "model": "gemini-3.1-flash-image", "kind": "generate", "resolution": "1k", "quality": null, "usd": 0.075,
+      "source": "spike reservation for Google calls (spike-results/ledger.json google rows: estimate_basis estimated at 0.075); the spike's recorded usage (26 input / 1120 image + 429 text output tokens) prices at about 0.0685 via spike/lib/prices.ts geminiCostFromUsage (item 8) plus headroom for thinking tokens; confirm the real total on Google Cloud Billing in Settings -> Spend",
       "read_on": "2026-10-03" }
   ]
 }

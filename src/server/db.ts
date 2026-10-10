@@ -29,8 +29,26 @@ CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
   created_at TEXT NOT NULL,
   prompt TEXT NOT NULL,
-  status TEXT NOT NULL                                   -- ok | failed | blocked
+  status TEXT NOT NULL                                   -- ok | failed | blocked | running | partial
 );
+
+-- A2 (Amendment 1 section 4 item 11): one row per image a run asked for. The in-process queue in runs.ts
+-- fills these; a job's generations row lands at completion (same F16 order as A1: files, then rows).
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  creator_id TEXT NOT NULL,                              -- xai | google
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  generation_id TEXT NOT NULL,                           -- the id the ledger and generations row use
+  prompt TEXT NOT NULL,
+  ratio TEXT NOT NULL,
+  status TEXT NOT NULL,                                  -- queued | running | ok | refused | error | blocked | not_sent
+  label TEXT,                                            -- the run's real-person check label (P1c send_labeled)
+  created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS jobs_run ON jobs(run_id);
 
 CREATE TABLE IF NOT EXISTS generations (
   id TEXT PRIMARY KEY,

@@ -1,4 +1,4 @@
-# Red Social Room app (A1). Untested in Docker on the build box (no Docker there); see README "Run the app".
+# Red Social Room app (A1 + A2). Verified in Docker on the build box 2026-10-09 (A1 acceptance); see README.
 FROM node:22.19-bookworm-slim AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1

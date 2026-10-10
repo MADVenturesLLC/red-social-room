@@ -212,3 +212,93 @@ export function unresolvedRows(db: DB): UnresolvedRow[] {
 export function unresolvedHeldText(r: Pick<UnresolvedRow, "counted_micro_usd" | "late_micro_usd">): string {
   return r.late_micro_usd === null ? `${fmtUsd(r.counted_micro_usd)} held` : `${fmtUsd(r.counted_micro_usd)} held (late bill ${fmtUsd(r.late_micro_usd)})`;
 }
+
+// ---- A2: reconcile (F21) and the Google console total (item 8) ----
+
+/** Settings -> Spend -> Unresolved (F21): settle one held row by hand. The ledger stays append-only: the row
+ *  keeps its id, reservation and history; only status/actual/source/note/settled_at change. */
+export function reconcileRow(db: DB, id: string, action: { action: "not_charged" } | { action: "charged"; usd: number }, note = ""): { actualMicros: number } {
+  let actualMicros: number;
+  if (action.action === "not_charged") actualMicros = 0;
+  else {
+    if (typeof action.usd !== "number" || !Number.isFinite(action.usd) || action.usd < 0) throw new RangeError("The charged amount must be a number of dollars, $0 or more.");
+    actualMicros = toMicros(action.usd);
+  }
+  if (!Number.isSafeInteger(actualMicros) || actualMicros < 0) throw new RangeError("The charged amount must be $0 or more.");
+  const r = db.prepare(`UPDATE spend_ledger SET status = 'settled', actual_micro_usd = ?, cost_source = 'manual_reconcile', settled_at = ?, note = ? WHERE id = ? AND status = 'unresolved'`)
+    .run(actualMicros, isoNY(), note ? `reconciled: ${note}` : "reconciled in Settings", id);
+  if (Number(r.changes) !== 1) throw new RowNotReserved(db, id, "not reconciled");
+  return { actualMicros };
+}
+
+export interface GoogleConsoleState { monthNY: string; consoleMicros: number | null; estimateMicros: number; appliedMicros: number; differenceMicros: number | null }
+
+const googleConsoleKey = (month: string) => `google_console_total_micro:${month}`;
+const googleAdjustKey = (month: string) => `google_adjust_applied_micro:${month}`;
+
+function settingMicros(db: DB, key: string): number | null {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+  if (!row) return null;
+  const n = Number(row.value);
+  if (!Number.isSafeInteger(n) || n < 0) throw new Error(`settings.${key} is not a whole non-negative number; refusing to guess.`);
+  return n;
+}
+
+function googleEstimateMicros(db: DB, monthNY: string): number {
+  const r = db.prepare("SELECT COALESCE(SUM(counted_micro_usd),0) AS c FROM spend_counted WHERE month_ny = ? AND provider = 'google' AND kind <> 'adjustment'").get(monthNY) as { c: number };
+  return Number(r.c);
+}
+
+/** What Settings -> Spend shows for the Google console check: the app's Google estimate for the month, the
+ *  console total Michael entered (if any), what adjustments were already applied, and the difference. */
+export function googleConsoleState(db: DB, monthNY = currentMonthNY()): GoogleConsoleState {
+  const estimateMicros = googleEstimateMicros(db, monthNY);
+  const consoleMicros = settingMicros(db, googleConsoleKey(monthNY));
+  const appliedMicros = settingMicros(db, googleAdjustKey(monthNY)) ?? 0;
+  return { monthNY, consoleMicros, estimateMicros, appliedMicros, differenceMicros: consoleMicros === null ? null : consoleMicros - (estimateMicros + appliedMicros) };
+}
+
+/**
+ * Item 8: Michael enters the Google console total for the month. If it is higher than the app's estimate
+ * (plus adjustments already applied), ONE adjustment ledger row is added for the difference, settled at the
+ * difference with cost_source manual_reconcile, so the cap counts real spend. Per-call rows are never
+ * rewritten. Entering the same total again adds nothing (the applied amount is remembered).
+ */
+export function setGoogleConsoleTotal(db: DB, usd: number, opts: { monthNY?: string; note?: string } = {}): { adjustmentMicros: number; state: GoogleConsoleState } {
+  const monthNY = opts.monthNY ?? currentMonthNY();
+  if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0 || usd > 10_000) throw new RangeError("The console total must be a number between $0 and $10,000.");
+  const consoleMicros = toMicros(usd);
+  return tx(db, () => {
+    const estimateMicros = googleEstimateMicros(db, monthNY);
+    const applied = settingMicros(db, googleAdjustKey(monthNY)) ?? 0;
+    const difference = consoleMicros - (estimateMicros + applied);
+    let adjustmentMicros = 0;
+    if (difference > 0) {
+      adjustmentMicros = difference;
+      db.prepare(`INSERT INTO spend_ledger (id, created_at, month_ny, provider, model, kind, resolution, quality, generation_id, attempt,
+        estimate_micro_usd, estimate_source, status, actual_micro_usd, cost_source, cost_detail, outcome, settled_at, note)
+        VALUES (?, ?, ?, 'google', 'console-total', 'adjustment', NULL, NULL, NULL, 1, ?, ?, 'settled', ?, 'manual_reconcile', ?, 'manual_reconcile', ?, ?)`).run(
+        randomUUID(), isoNY(), monthNY, adjustmentMicros,
+        "Settings: Google console total vs the app's estimate (Amendment 1 item 8)",
+        adjustmentMicros,
+        JSON.stringify({ console_micro_usd: consoleMicros, estimate_micro_usd: estimateMicros, applied_before_micro_usd: applied, difference_micro_usd: difference }),
+        isoNY(),
+        opts.note ?? `console total $${fmtUsd(consoleMicros)} entered in Settings; app estimate was $${fmtUsd(estimateMicros)}`);
+      db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(googleAdjustKey(monthNY), String(applied + adjustmentMicros));
+    }
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(googleConsoleKey(monthNY), String(consoleMicros));
+    return { adjustmentMicros, state: googleConsoleState(db, monthNY) };
+  });
+}
+
+/** The cost cell of a run tile built from stored rows: the latest attempt's ledger row for this generation. */
+export function generationCostText(db: DB, generationId: string): string | null {
+  const r = db.prepare("SELECT status, actual_micro_usd AS act, cost_source AS src, counted_micro_usd AS counted FROM spend_counted WHERE generation_id = ? ORDER BY attempt DESC, created_at DESC LIMIT 1").get(generationId) as { status: string; act: number | null; src: string | null; counted: number } | undefined;
+  if (!r) return null;
+  if (r.status !== "settled") return `${fmtUsd(Number(r.counted))} held (cost unknown)`;
+  const m = Number(r.act);
+  if (r.src === "billed_provider" || r.src === "manual_reconcile") return fmtUsd(m);
+  if (r.src === "not_sent") return "not sent";
+  if (r.src === "assumed_zero_rejected" || r.src === "assumed_zero_429") return `${fmtUsd(m)} (confirm against console)`;
+  return `${fmtUsd(m)} est.`;
+}

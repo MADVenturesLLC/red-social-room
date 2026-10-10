@@ -21,3 +21,4 @@ button.secondary { background: transparent; color: inherit; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: .75rem; }
 table { border-collapse: collapse; width: 100%; font-size: .9rem; }
 td, th { border-bottom: 1px solid var(--bg2); padding: .3rem; text-align: left; }
+.badge { background: var(--red); color: #fff; border-radius: 999px; padding: 0 .4rem; font-size: .75rem; vertical-align: super; margin-left: .2rem; }

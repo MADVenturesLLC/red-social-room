@@ -1,4 +1,5 @@
-// End-to-end against the real Next.js production server (next build + next start) and a local fake xAI.
+// End-to-end against the real Next.js production server (next build + next start) and local fakes for xAI
+// and Google (A2).
 // Proves the A1 path over HTTP (make -> save -> find by a prompt word) and that NO page, API response,
 // header, or built browser file contains a key (A1 acceptance: "Keys never appear in browser network
 // traffic"; the Settings page shows only the last 4). Dummy keys only; the real env keys are not passed in.
@@ -32,6 +33,10 @@ const slowGate = new Promise<void>((r) => { releaseSlow = r; });
 let releaseLate: () => void = () => undefined, lateSeen: () => void = () => undefined;
 const lateArrived = new Promise<void>((r) => { lateSeen = r; });
 const lateGate = new Promise<void>((r) => { releaseLate = r; });
+// A prompt containing "sse-hold" is held until releaseSse(), so the A2 SSE test can subscribe while a job runs.
+let releaseSse: () => void = () => undefined, sseSeen: () => void = () => undefined;
+const sseArrived = new Promise<void>((r) => { sseSeen = r; });
+const sseGate = new Promise<void>((r) => { releaseSse = r; });
 let keyCheckBeforeFirstRequest = false;
 // A1 pin 17, line 368: set only when the server STARTS (not at build), to prove it is read at runtime.
 const ALLOWED_HOSTS_ENV = "  Phone.Tailnet-Example.ts.net , other.example ";
@@ -69,7 +74,7 @@ function rawBody(resp: string): string {
     i = nl + 2 + n + 2;
   }
 }
-const mockSeen: Array<{ path: string; auth: string | undefined }> = [];
+const mockSeen: Array<{ path: string; auth: string | undefined; googleAuth: string | undefined; body: string }> = [];
 const transcript: Array<{ what: string; text: string }> = [];
 let serverLog = "";
 
@@ -91,18 +96,31 @@ const post = (path: string, body: unknown, headers: Record<string, string> = { "
 before(async () => {
   const jpeg = await sampleJpeg();
   mock = createServer((req, res) => {
-    mockSeen.push({ path: req.url ?? "", auth: req.headers.authorization });
+    const entry = { path: req.url ?? "", auth: req.headers.authorization, googleAuth: typeof req.headers["x-goog-api-key"] === "string" ? req.headers["x-goog-api-key"] : undefined, body: "" };
+    mockSeen.push(entry);
     let body = "";
     req.on("data", (c) => { body += c; });
     req.on("end", () => {
+      entry.body = body;
       res.setHeader("content-type", "application/json");
       if (req.url === "/v1/api-key") return res.end(JSON.stringify({ api_key_blocked: false, api_key_disabled: false, team_blocked: false }));
       if (req.url === "/v1/image-generation-models") return res.end(JSON.stringify({ models: [{ id: "grok-imagine-image-2.0", version: "1.0", fingerprint: "fp_e2e" }] }));
       if (req.url === "/v1/images/generations" && req.method === "POST") {
         if (body.includes("late-call")) { lateSeen(); void lateGate.then(() => { res.setHeader("x-request-id", "req-e2e-late"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 900000000 } })); }); return; }
         if (body.includes("slow-call")) { slowSeen(); void slowGate.then(() => { res.setHeader("x-request-id", "req-e2e-slow"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 400000000 } })); }); return; }
+        if (body.includes("sse-hold")) { sseSeen(); void sseGate.then(() => { res.setHeader("x-request-id", "req-e2e-sse"); res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: 400000000 } })); }); return; }
         res.setHeader("x-request-id", "req-e2e");
         return res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString("base64"), mime_type: "image/jpeg" }], usage: { cost_in_usd_ticks: body.includes("medium-bill") ? 600000000 : 400000000 } }));
+      }
+      if (req.url === "/v1beta/models/gemini-3.1-flash-image" && req.method === "GET") {
+        return res.end(JSON.stringify({ name: "models/gemini-3.1-flash-image", version: "3.0", displayName: "Nano Banana 2" }));
+      }
+      if (req.url === "/v1beta/interactions" && req.method === "POST") {
+        if (body.includes("google-503")) { res.statusCode = 503; return res.end("oops"); }
+        if (body.includes("google-refuse")) {
+          return res.end(JSON.stringify({ id: "int-e2e-refuse", status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: "I can't draw that." }] }], usage: { total_input_tokens: 12, total_output_tokens: 7, total_thought_tokens: 0 } }));
+        }
+        return res.end(JSON.stringify({ id: "int-e2e", status: "completed", model: "gemini-3.1-flash-image", steps: [{ type: "thought", signature: "sig-e2e" }, { type: "model_output", content: [{ type: "text", text: "Here it is." }, { type: "image", mime_type: "image/jpeg", data: jpeg.toString("base64") }] }], usage: { total_input_tokens: 26, total_output_tokens: 1549, total_thought_tokens: 0, output_tokens_by_modality: [{ modality: "image", tokens: 1120 }, { modality: "text", tokens: 429 }] } }));
       }
       res.statusCode = 404; res.end("{}");
     });
@@ -110,7 +128,7 @@ before(async () => {
   await new Promise<void>((r) => mock.listen(0, "127.0.0.1", () => r()));
   const mockPort = (mock.address() as { port: number }).port;
   dataDir = mkdtempSync(join(tmpdir(), "rsr-e2e-"));
-  const env = childEnv({ XAI_API_KEY: DUMMY_KEY, GEMINI_API_KEY: GEMINI_DUMMY, RSR_DATA_DIR: dataDir, RSR_XAI_BASE_URL: `http://127.0.0.1:${mockPort}` });
+  const env = childEnv({ XAI_API_KEY: DUMMY_KEY, GEMINI_API_KEY: GEMINI_DUMMY, RSR_DATA_DIR: dataDir, RSR_XAI_BASE_URL: `http://127.0.0.1:${mockPort}`, RSR_GOOGLE_BASE_URL: `http://127.0.0.1:${mockPort}` });
   // Build with the dummy keys in the environment, so the bundle scan below would catch any inlining.
   // RSR_ALLOWED_HOSTS is deliberately absent at build time and present at start (A1 pin 17: read at runtime).
   assert.equal(env.RSR_ALLOWED_HOSTS, undefined);
@@ -481,6 +499,132 @@ test("A1 pin 19 (d), line 370 (Argus L1 and L3 on 0e2f1f4): starting the server 
   } finally {
     for (const r of restores) r();
     for (const d of [fresh, used, lockRo, roParent]) rmSync(d, { recursive: true, force: true });
+  }
+});
+
+interface RunJobE2E { creator: string; status: string; generationId: string; view: { status: string; message: string | null; code: string | null; displayNote: string | null; costText: string | null; image: { assetId: string } | null } | null }
+/** Poll GET /api/run/<id> until the run is terminal (jobs finish in a worker, not in the POST). */
+async function runToCompletion(runId: string, ms = 60_000): Promise<{ status: string; jobs: RunJobE2E[] }> {
+  const t0 = Date.now();
+  for (;;) {
+    const r = await fetch(`${base}/api/run/${runId}`);
+    assert.equal(r.status, 200);
+    const v = (await r.json()) as { status: string; jobs: RunJobE2E[] };
+    if (v.status !== "running") return v;
+    if (Date.now() - t0 > ms) throw new Error(`run did not finish: ${JSON.stringify(v)}`);
+    await new Promise((res) => setTimeout(res, 250));
+  }
+}
+
+test("A2 over HTTP: one prompt to both creators shows both results; the Google call carries store:false and its own key; the tile saves to the library", async () => {
+  const create = await record("GET / (A2 creator cards)", await fetch(`${base}/`));
+  assert.match(create, /Grok Imagine 2\.0/);
+  assert.match(create, /Nano Banana 2/);
+  assert.match(create, /Nano Banana Pro/);
+  const started = JSON.parse(await record("POST /api/run (both creators)", await post("/api/run", { prompt: "a hot air balloon over vineyards at sunrise", ratio: "4:5", creators: [{ id: "xai", n: 1 }, { id: "google", n: 1 }] }))) as { runId: string; blocked: boolean };
+  assert.equal(started.blocked, false);
+  const v = await runToCompletion(started.runId);
+  assert.equal(v.status, "ok", JSON.stringify(v));
+  const xai = v.jobs.find((j) => j.creator === "xai")!;
+  const goog = v.jobs.find((j) => j.creator === "google")!;
+  assert.equal(xai.status, "ok");
+  assert.equal(goog.status, "ok");
+  assert.equal(xai.view!.displayNote, "Made at 3:4, cropped to 4:5");
+  assert.equal(goog.view!.displayNote, null);
+  const gi = await fetch(`${base}/api/assets/${goog.view!.image!.assetId}`);
+  assert.equal(gi.headers.get("content-type"), "image/jpeg");
+  const lastPost = mockSeen.filter((m) => m.path === "/v1beta/interactions").at(-1)!;
+  const gbody = JSON.parse(lastPost.body) as Record<string, unknown>;
+  assert.equal(gbody.store, false);
+  assert.equal("previous_interaction_id" in gbody, false);
+  assert.equal(lastPost.googleAuth, GEMINI_DUMMY);
+  const saved = JSON.parse(await record("POST /api/library (Google tile)", await post("/api/library", { generationId: goog.generationId }))) as { already: boolean };
+  assert.equal(saved.already, false);
+  const lib = JSON.parse(await record("GET /api/library?q=balloon", await fetch(`${base}/api/library?q=balloon`))) as { posts: unknown[] };
+  assert.equal(lib.posts.length, 1);
+});
+
+/** Read an SSE stream to its end (or the timeout); returns the raw frames and whether the stream closed. */
+async function readSseAll(path: string, ms = 20_000): Promise<{ text: string; ended: boolean }> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  const res = await fetch(base + path, { signal: ctrl.signal });
+  assert.ok((res.headers.get("content-type") ?? "").startsWith("text/event-stream"), res.headers.get("content-type") ?? "");
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let text = "", ended = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) { ended = true; break; }
+      text += dec.decode(value, { stream: true });
+    }
+  } catch { /* aborted at the timeout */ } finally { clearTimeout(t); }
+  return { text, ended };
+}
+
+test("A2 SSE: the events stream delivers job updates and the final run frame, and closes for a finished run", async () => {
+  const started = JSON.parse(await record("POST /api/run (sse)", await post("/api/run", { prompt: "sse-hold: a streamed kite", ratio: "1:1", creators: [{ id: "xai", n: 1 }] }))) as { runId: string };
+  await sseArrived; // the job is in flight at the fake provider
+  const reading = readSseAll(`/api/run/${started.runId}/events`);
+  await new Promise((r) => setTimeout(r, 150)); // let the stream subscribe, then let the job finish
+  releaseSse();
+  const frames = await reading;
+  assert.match(frames.text, /"type":"snapshot"/);
+  assert.match(frames.text, /"type":"job"/);
+  assert.match(frames.text, /"type":"run"/);
+  assert.match(frames.text, /"status":"ok"/);
+  assert.equal(frames.ended, true, "the stream closes after the final run frame");
+  // A late subscriber to a finished run gets the snapshot and an immediate close (no hang).
+  const late = await readSseAll(`/api/run/${started.runId}/events`);
+  assert.match(late.text, /"type":"snapshot"/);
+  assert.equal(late.ended, true, "a finished run closes the stream at once");
+});
+
+test("A2 F12 partial over HTTP: the failing creator shows the right message while the other returns", async () => {
+  const started = JSON.parse(await record("POST /api/run (google 503)", await post("/api/run", { prompt: "google-503: a kite over cliffs", ratio: "1:1", creators: [{ id: "xai", n: 1 }, { id: "google", n: 1 }] }))) as { runId: string };
+  const v = await runToCompletion(started.runId);
+  assert.equal(v.status, "partial");
+  const goog = v.jobs.find((j) => j.creator === "google")!;
+  assert.equal(goog.status, "error");
+  assert.equal(goog.view!.message, "Google error 503. Retry.");
+  assert.match(goog.view!.costText ?? "", /held \(cost unknown\)/);
+  assert.equal(v.jobs.find((j) => j.creator === "xai")!.status, "ok");
+  // F21: the Settings link carries a badge with the unresolved count.
+  const status = (await (await fetch(`${base}/api/status`)).json()) as { totals: { unresolvedCount: number } };
+  assert.ok(status.totals.unresolvedCount >= 1);
+  const home = await record("GET / (spend badge)", await fetch(`${base}/`));
+  const m = home.match(/data-testid="spend-badge">(\d+)</);
+  assert.ok(m, "the badge is rendered");
+  assert.equal(Number(m![1]), status.totals.unresolvedCount, "the badge counts unresolved rows (F21)");
+});
+
+test("A2 F9 over HTTP: a text-only Google reply shows as refused with the provider text", async () => {
+  const started = JSON.parse(await record("POST /api/run (google refusal)", await post("/api/run", { prompt: "google-refuse: something the model won't make", ratio: "1:1", creators: [{ id: "google", n: 1 }] }))) as { runId: string };
+  const v = await runToCompletion(started.runId);
+  const goog = v.jobs[0];
+  assert.equal(goog.status, "refused");
+  assert.equal(goog.view!.message, "Google returned no image: I can't draw that.");
+});
+
+test("A2 cap: a $0.10 cap blocks the next call before it is sent", async () => {
+  await record("POST /api/settings/cap (0.10)", await post("/api/settings/cap", { usd: 0.1 }));
+  try {
+    const posts = mockSeen.filter((m) => m.path === "/v1/images/generations" || m.path === "/v1beta/interactions").length;
+    const before = ((await (await fetch(`${base}/api/status`)).json()) as { totals: { countedMicros: number } }).totals.countedMicros;
+    const started = JSON.parse(await record("POST /api/run (capped)", await post("/api/run", { prompt: "a capped run", ratio: "1:1", creators: [{ id: "xai", n: 1 }, { id: "google", n: 1 }] }))) as { runId: string };
+    const v = await runToCompletion(started.runId);
+    assert.equal(v.status, "failed");
+    for (const j of v.jobs) {
+      assert.equal(j.status, "error");
+      assert.match(j.view!.message ?? "", /Monthly cap \$0\.10 reached/);
+      assert.equal(j.view!.code, "cap");
+    }
+    assert.equal(mockSeen.filter((m) => m.path === "/v1/images/generations" || m.path === "/v1beta/interactions").length, posts, "nothing was sent");
+    const after = ((await (await fetch(`${base}/api/status`)).json()) as { totals: { countedMicros: number } }).totals.countedMicros;
+    assert.equal(after, before, "no ledger row");
+  } finally {
+    await record("POST /api/settings/cap (back to 50)", await post("/api/settings/cap", { usd: 50 }));
   }
 });
 

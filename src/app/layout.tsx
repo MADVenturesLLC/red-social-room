@@ -1,10 +1,14 @@
 import type { ReactNode } from "react";
+import { getApp } from "../server/app.ts";
+import { unresolvedRows } from "../server/ledger.ts";
 import "./globals.css";
 
 export const metadata = { title: "Red Social Room", robots: { index: false, follow: false } };
 export const viewport = { width: "device-width", initialScale: 1 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
+  // F21: a badge on the Spend link shows the count of rows whose cost is still unknown.
+  const unresolved = unresolvedRows(getApp().db).length;
   return (
     <html lang="en">
       <body>
@@ -12,7 +16,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <strong>Red Social Room</strong>
           <a href="/">Create</a>
           <a href="/library">Library</a>
-          <a href="/settings">Settings</a>
+          <a href="/settings">Settings{unresolved > 0 ? <> <span className="badge" data-testid="spend-badge">{unresolved}</span></> : null}</a>
         </header>
         <main>{children}</main>
       </body>

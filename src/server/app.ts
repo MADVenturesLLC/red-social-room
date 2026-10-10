@@ -1,5 +1,6 @@
 // Process-wide app instance for the Next.js server (route handlers and server pages).
-// Holds the DB, the key store, the switches, the price table and the key-check cache.
+// Holds the DB, both key stores, the switches, the price table and both key-check caches.
+// A2: the Google store (secrets/gemini_api_key, GEMINI_API_KEY) and the run-queue startup sweep.
 import { join } from "node:path";
 import { dataDir, loadSwitches, REPO_ROOT } from "./config.ts";
 import { openDb } from "./db.ts";
@@ -10,14 +11,20 @@ import { KeyStore } from "./keys.ts";
 import { loadPrices } from "./prices.ts";
 import { nameListMethod } from "./prompt-check.ts";
 import { checkKey, type KeyCheckCache } from "./xai/adapter.ts";
+import { checkGoogleKey } from "./google/adapter.ts";
+import { resetStrandedJobs } from "./runs.ts";
 import type { AppDeps } from "./generate.ts";
 
-/** Test-only override of the xAI base URL. Accepted only for a loopback http URL, so a stray env value
- *  can never send the key to another host. */
-export function xaiBaseUrlFromEnv(v: string | undefined): string | undefined {
+/** Test-only override of an API base URL. Accepted only for a loopback http URL, so a stray env value
+ *  can never send a key to another host. */
+export function baseUrlFromEnv(v: string | undefined, name: string): string | undefined {
   if (!v) return undefined;
   if (/^http:\/\/127\.0\.0\.1:\d{2,5}$/.test(v)) return v;
-  throw new Error("RSR_XAI_BASE_URL may only point at http://127.0.0.1:<port> (tests). Unset it for real use.");
+  throw new Error(`${name} may only point at http://127.0.0.1:<port> (tests). Unset it for real use.`);
+}
+
+export function xaiBaseUrlFromEnv(v: string | undefined): string | undefined {
+  return baseUrlFromEnv(v, "RSR_XAI_BASE_URL");
 }
 
 type G = typeof globalThis & { __rsrApp?: AppDeps };
@@ -37,27 +44,37 @@ export function getApp(): AppDeps {
     throw e;
   }
   const keys = new KeyStore({ secretsDir: join(dir, "secrets") });
+  const googleKeys = new KeyStore({ secretsDir: join(dir, "secrets"), provider: "google" }); // A2
   const keyCheck: KeyCheckCache = { fingerprint: null, ok: false, versionListing: null };
+  const googleKeyCheck: KeyCheckCache = { fingerprint: null, ok: false, versionListing: null };
+  const testBase = process.env.RSR_XAI_BASE_URL || process.env.RSR_GOOGLE_BASE_URL;
   const app: AppDeps = {
     db,
     keys,
+    googleKeys,
     prices: loadPrices(),
     switches: loadSwitches(),
     fetch: (url, init) => fetch(url, init),
     baseUrl: xaiBaseUrlFromEnv(process.env.RSR_XAI_BASE_URL),
-    timeoutMs: process.env.RSR_XAI_BASE_URL && process.env.RSR_TEST_TIMEOUT_MS ? Number(process.env.RSR_TEST_TIMEOUT_MS) : undefined,
+    googleBaseUrl: baseUrlFromEnv(process.env.RSR_GOOGLE_BASE_URL, "RSR_GOOGLE_BASE_URL"),
+    timeoutMs: testBase && process.env.RSR_TEST_TIMEOUT_MS ? Number(process.env.RSR_TEST_TIMEOUT_MS) : undefined,
     keyCheck,
+    googleKeyCheck,
     dataDir: dir,
     imagesDir: join(dir, "images"),
     promptMethod: nameListMethod(join(REPO_ROOT, "config", "real-person-names.txt")),
-    log: (m) => console.log(`[rsr] ${new Date().toISOString()} ${keys.scrub(m)}`),
+    log: (m) => console.log(`[rsr] ${new Date().toISOString()} ${keys.scrub(googleKeys.scrub(m))}`),
   };
   g.__rsrApp = app;
   // Rows left `reserved` by a previous process were in flight when it stopped (Argus L2): list them as unresolved.
   const interrupted = markInterrupted(app.db);
   if (interrupted > 0) app.log?.(`marked ${interrupted} interrupted reservation(s) unresolved at start`);
-  // Free key check at app start (Amendment 1 item 19). Not awaited; failures show on the card and in Settings.
+  // A2: jobs left queued/running by a stopped process can never finish (there is no other runner for this data directory).
+  const stranded = resetStrandedJobs(app.db);
+  if (stranded > 0) app.log?.(`marked ${stranded} stranded run job(s) at start`);
+  // Free key checks at app start (Amendment 1 item 19). Not awaited; failures show on the cards and in Settings.
   if (keys.status().set) void checkKey(app).catch(() => undefined);
+  if (googleKeys.status().set) void checkGoogleKey(app).catch(() => undefined);
   return app;
 }
 
