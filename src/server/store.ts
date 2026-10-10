@@ -1,6 +1,6 @@
 // Content-addressed image store (TECH-PLAN-v1.md:76; Amendment 1 F16): files are named by their SHA-256,
 // written to a temp file, fsynced, renamed, and the directory fsynced. Originals are never overwritten.
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, statfsSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statfsSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import sharp from "sharp";
@@ -66,6 +66,12 @@ export function putImage(imagesDir: string, buf: Buffer): StoredImage {
     const why = code === "ENOSPC" ? "disk full" : code === "EACCES" || code === "EROFS" || code === "EPERM" ? "data folder is not writable" : `I/O error${code ? ` (${code})` : ""}`;
     throw new StoreError(`Save failed: ${why} (${freeText(imagesDir)}).`);
   }
+}
+
+/** A3: read a stored image back by its id + mime (the edit/reference source). Throws if the file is gone. */
+export function readStored(imagesDir: string, id: string, mime: string): Buffer {
+  const ext = mime === "image/jpeg" ? "jpg" : mime === "image/png" ? "png" : "webp";
+  return readFileSync(join(/*turbopackIgnore: true*/ imagesDir, relPathFor(id, ext)));
 }
 
 /** D2 (Amendment 1 item 1): make the 4:5 tile image from a 3:4 original with sharp's attention crop. */

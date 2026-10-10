@@ -1,6 +1,6 @@
 # MADVentures Red Social Room
 
-Act 0 spike (see `spike-results/REPORT.md`), the A1 app and the A2 additions (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
+Act 0 spike (see `spike-results/REPORT.md`), the A1 app, the A2 additions and the A3 edits/lineage additions (below). Plan: `docs/plan/TECH-PLAN-v1.md`, amended by `docs/plan/TECH-PLAN-v1-AMENDMENT-1.md` (the amendment wins where they differ). Founder decisions: `docs/plan/FOUNDER-DECISIONS.md`. Model research: `docs/plan/RESEARCH-models.md`.
 
 ## Requirements
 
@@ -72,6 +72,17 @@ A2 (Amendment 1 section 4) adds: **Nano Banana 2** (`gemini-3.1-flash-image`) be
 - Google key: paste it in Settings (saved server-side to `data/secrets/gemini_api_key`, mode 600) or set `GEMINI_API_KEY`. The free check is `GET /v1beta/models/gemini-3.1-flash-image`.
 - The roster also carries **Nano Banana Pro** (`gemini-3-pro-image`) as its own card, unticked by default (FD:11). Its model id and price were confirmed against the live pricing page on 2026-10-09 ($120/1M image tokens = 1120 tokens per 1K/2K image, about $0.134). Pro calls settle from the same usage token counts at Pro rates (input $2/M, text/thinking $12/M, images $120/M); the cap reserves **$0.25** per Pro call - the published image price plus headroom for text/thinking tokens - and settles at the token estimate. Pro shares the one Google key and the one $50 cap.
 - One more card state: after 3 consecutive 5xx results for one provider within 10 minutes the card shows "Provider having problems" until the next success (F5); a badge on the Settings link counts the unresolved rows (F21).
+
+### A3: edits, your own images, and lineage
+
+A3 (Amendment 1 section 4: "unchanged, plus F13 and the compare-edit check"; the own-image scope note added October 10, 2026) adds:
+
+- **Edit by description**: on any tile or uploaded image, **Edit** sends an instruction with the source image to the model that made it (or any edit-capable card, via the dropdown). Every edit writes a **new child file** - the original and every earlier version are never touched. xAI edits go to `POST /v1/images/edits` with the image inline as a data URI; Google edits send `[text, image]` in `input` (single-turn, `store: false`), matching the recorded spike calls. xAI edits reserve and reconcile at the observed **$0.07** (no `quality` field is sent, A1 pin 2); Google edits settle from the same token estimate as their generations ($0.075 flash row; the Pro edit row is $0.25, cap-safe).
+- **Compare edit**: tick "compare edit" to send the *identical instruction string* to two models side by side (item 28 - the plan's tool for "the two providers read the same edit instruction differently"); the cost is shown before running.
+- **The version strip**: under the edit panel, the whole chain is shown (an upload is the root, each edit a child; a failed edit is a red entry with its error and no image, F13). Click any version to view it; the next edit starts from the selected version ("step back to any earlier version"); **Save this version to library** saves whichever one you pick. Nothing is ever overwritten.
+- **Your own images (F14)**: **Bring your own image** accepts PNG/JPEG/WebP up to 20 MB and 8,000 px a side; the browser checks first and offers "Resize to 4096 px and continue?" for larger ones, and the server re-checks everything before storing. Uploading is free (no provider call, no ledger row) and lands in the same content-addressed store (`images/<aa>/<sha256>.<ext>` plus an `assets` row).
+- **Use as reference**: take an uploaded or generated image into a *new* image - the image rides with your prompt in one single-turn call. Google takes it (`[text, image]` input; up to 14 reference images per the docs); **Grok takes no reference images**, so that button is disabled on the xAI card and the server refuses it with the reason - nothing is silently dropped.
+- **Data**: `db/rsr.sqlite` gains `generations.parent_asset_id` / `mask_asset_id` and `jobs.kind` / `parent_asset_id` (older databases migrate at start); lineage is read back from those links only (`src/server/lineage.ts`, `GET /api/lineage?id=<sha>`). Mask painting and the local ComfyUI creator wait on A0b (the GPU spike), per the plan's "if the GPU is ready".
 
 ### Run it locally (no Docker)
 

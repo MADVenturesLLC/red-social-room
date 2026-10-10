@@ -13,6 +13,12 @@
       "read_on": "2026-10-09" },
     { "provider": "google", "model": "gemini-3.1-flash-image", "kind": "generate", "resolution": "1k", "quality": null, "usd": 0.075,
       "source": "spike reservation for Google calls (spike-results/ledger.json google rows: estimate_basis estimated at 0.075); the spike's recorded usage (26 input / 1120 image + 429 text output tokens) prices at about 0.0685 via spike/lib/prices.ts geminiCostFromUsage (item 8) plus headroom for thinking tokens; confirm the real total on Google Cloud Billing in Settings -> Spend",
-      "read_on": "2026-10-03" }
+      "read_on": "2026-10-03" },
+    { "provider": "google", "model": "gemini-3.1-flash-image", "kind": "edit", "resolution": "1k", "quality": null, "usd": 0.075,
+      "source": "A3: mirrors the generate row; an edit settles from the same usage-token formula (item 8) with the source image riding as input tokens, and the spike's recorded edit (spike-results/gemini/02-edit-background-red.json) prices under this row; confirm on Google Cloud Billing in Settings -> Spend",
+      "read_on": "2026-10-09" },
+    { "provider": "google", "model": "gemini-3-pro-image", "kind": "edit", "resolution": "1k", "quality": null, "usd": 0.25,
+      "source": "A3: mirrors the Pro generate row (cap-safe); the edit settles from token usage (image output about $0.1344 at 1120 tokens x $120/M plus input/text/thinking headroom)",
+      "read_on": "2026-10-09" }
   ]
 }

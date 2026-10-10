@@ -1,10 +1,14 @@
 // What the Create cards and Settings page show (no secrets: key status is source + last 4 only).
 // A2: one creator card per provider (server/runs.ts CREATORS); `creator`/`key` stay the xAI card for
 // compatibility, `creators`/`googleKey` carry the full picture.
+// A3: each card also carries its edit estimate and its reference-image capacity (0 = the UI does not
+// offer "Use as reference" on that card, per capabilities()).
 import { monthTotals, fmtUsd, priceDrifts, type MonthTotals, type PriceDrift } from "./ledger.ts";
 import { estimate } from "./prices.ts";
 import { qualityFor, resolutionFor } from "./config.ts";
 import { CREATORS } from "./runs.ts";
+import { CAPABILITIES as XAI_CAPS } from "./xai/adapter.ts";
+import { CAPABILITIES as GOOGLE_CAPS } from "./google/adapter.ts";
 import type { AppDeps } from "./generate.ts";
 import type { KeyStatus } from "./keys.ts";
 import type { DB } from "./db.ts";
@@ -16,6 +20,11 @@ export interface CreatorStatus {
   model: string;
   priceText: string;
   estimateMicros: number;
+  /** A3: the pre-call edit reservation (null when no row exists yet). */
+  editEstimateMicros: number | null;
+  editPriceText: string | null;
+  /** A3: how many reference images this creator takes for a "Use as reference" run (0 = not offered). */
+  maxReferenceImages: number;
   state: "ready" | "no_key" | "key_unchecked" | "cap_reached" | "provider_problems";
   stateText: string;
   keySet: boolean;
@@ -44,6 +53,12 @@ function cardOf(d: AppDeps, def: (typeof CREATORS)[number], totals: MonthTotals)
   const checked = fp !== null && keyCheck.fingerprint === fp;
   const priceQuality = def.provider === "xai" ? qualityFor(d.switches, "generate").priceQuality : null;
   const est = estimate(d.db, d.prices, { provider: def.provider, model: def.model, kind: "generate", resolution: resolutionFor(d.switches), quality: priceQuality });
+  let editEstimateMicros: number | null = null;
+  try {
+    const eq = def.provider === "xai" ? qualityFor(d.switches, "edit").priceQuality : null;
+    editEstimateMicros = estimate(d.db, d.prices, { provider: def.provider, model: def.model, kind: "edit", resolution: resolutionFor(d.switches), quality: eq }).micros;
+  } catch { editEstimateMicros = null; }
+  const caps = def.provider === "xai" ? XAI_CAPS : GOOGLE_CAPS;
   let state: CreatorStatus["state"] = "ready", stateText = "Ready";
   if (!key.set) { state = "no_key"; stateText = "No key — add it in Settings"; }
   else if (totals.countedMicros + est.micros > totals.capMicros) { state = "cap_reached"; stateText = "Cap reached"; }
@@ -52,6 +67,8 @@ function cardOf(d: AppDeps, def: (typeof CREATORS)[number], totals: MonthTotals)
   return {
     id: def.id, name: def.name, model: def.model,
     priceText: `${fmtUsd(est.micros)} / image`, estimateMicros: est.micros,
+    editEstimateMicros, editPriceText: editEstimateMicros === null ? null : `${fmtUsd(editEstimateMicros)} / edit`,
+    maxReferenceImages: caps.maxReferenceImages,
     state, stateText,
     keySet: key.set, keySource: key.source, keyLast4: key.last4,
     checked, checkOk: checked && keyCheck.ok,

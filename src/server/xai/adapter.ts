@@ -1,7 +1,11 @@
 // Grok Imagine 2.0 adapter (TECH-PLAN-v1.md:68-74 interface; Amendment 1 sections 3.2/3.3, xAI column).
-// Order inside generate(): capabilities check (G6/F11) -> free key check (F1) -> per attempt: cap check +
-// reservation (G2/F20) -> one HTTP attempt -> cost (spike/lib/xai-shape.ts xaiCost, P7 switch) -> settle or
-// hold -> map the result. The real-person check (G7 step 1) runs before this, in generate.ts.
+// generate() and edit() share one attempt loop (performXaiCall): capabilities check (G6/F11) -> free key
+// check (F1) -> per attempt: cap check + reservation (G2/F20) -> one HTTP attempt -> cost (spike/lib/
+// xai-shape.ts xaiCost, P7 switch) -> settle or hold -> map the result. The real-person check (G7 step 1)
+// runs before this, in runs.ts.
+// A3: edit() posts to /v1/images/edits with the source image inline as a data URI (spike-results/xai/
+// 02-edit-background-red.json: model, prompt, image {type:"image_url", url}, n, response_format; no
+// quality field, A1 pin 2). Edits reserve and reconcile at the observed $0.07 (Amendment 1 item 2b).
 // Raw request/response bodies are never stored or logged (G5); only parsed fields leave this file.
 import { xaiCost } from "../../../spike/lib/xai-shape.ts";
 import type { XaiResp } from "../../../spike/lib/xai-shape.ts";
@@ -21,7 +25,11 @@ export const MAX_ATTEMPTS = 3; // F4: at most 3 attempts per user action
 
 /** capabilities() (T:69, Amendment 1 item 1, item 27): hard-coded, with sources. */
 export const CAPABILITIES = Object.freeze({
-  generate: true, edit: false, mask: false, maxN: 1,
+  generate: true, edit: true, mask: false, maxN: 1,
+  // A3: editing by description is documented (RESEARCH-models.md:43, POST /v1/images/edits with the source
+  // image plus a prompt) and was billed twice in the spike ($0.07, 2 of 2). References for generation:
+  // none documented for /v1/images/generations, so a reference request is refused before any network call.
+  maxReferenceImages: 0,
   // Official enum, https://api.x.ai/api-docs/openapi.json ImageAspectRatio (Amendment 1 item 1).
   ratios: Object.freeze(["1:1", "3:4", "4:3", "9:16", "16:9", "2:3", "3:2", "9:19.5", "19.5:9", "9:20", "20:9", "1:2", "2:1", "21:9", "5:2", "auto"] as const),
   // Ratios offered in the A1 picker. 4:5 is made as 3:4 then cropped (D2).
@@ -36,8 +44,8 @@ export interface CostInfo { micros: number | null; source: CostSource | "unresol
 export interface AttemptLog { clientRequestId: string; status: number | null; outcome: string; costMicros: number | null; costSource: string }
 
 export type XaiOutcome =
-  | { kind: "ok"; image: Buffer; mime: string | null; clientRequestId: string; providerRequestId: string | null; providerTrace: string | null; cost: CostInfo; latencyMs: number; attempts: AttemptLog[]; modelVersionListing: string | null; sentRatio: string }
-  | { kind: "refused"; message: string; clientRequestId: string; providerRequestId: string | null; cost: CostInfo; attempts: AttemptLog[]; sentRatio: string }
+  | { kind: "ok"; image: Buffer; mime: string | null; clientRequestId: string; providerRequestId: string | null; providerTrace: string | null; cost: CostInfo; latencyMs: number; attempts: AttemptLog[]; modelVersionListing: string | null; sentRatio: string | null }
+  | { kind: "refused"; message: string; clientRequestId: string; providerRequestId: string | null; cost: CostInfo; attempts: AttemptLog[]; sentRatio: string | null }
   | { kind: "error"; code: ErrorCode; message: string; clientRequestId: string | null; providerRequestId: string | null; cost: CostInfo | null; attempts: AttemptLog[]; sentRatio: string | null };
 
 export interface KeyCheckCache { fingerprint: string | null; ok: boolean; versionListing: string | null; message?: string | null }
@@ -179,45 +187,41 @@ function traceOf(r: AttemptResult): string | null {
 
 const STATUS_TEXT: Record<number, string> = { 500: "internal server error", 502: "bad gateway", 503: "service unavailable" };
 
-// ---- generate ----
+// ---- the shared attempt loop (A3: generate and edit both run through it) ----
 
-export async function generate(d: XaiDeps, req: { prompt: string; ratio: string; generationId: string }): Promise<XaiOutcome> {
+interface XaiCallPlan {
+  kind: "generate" | "edit";
+  url: string;
+  body: Record<string, unknown>;
+  /** Log prefix including the generation id, e.g. `xai edit gen=<uuid>`. */
+  logTag: string;
+  generationId: string;
+  sentRatio: string | null;
+  estMicros: number;
+  estSource: string;
+  versionListing: string | null;
+}
+
+async function performXaiCall(d: XaiDeps, plan: XaiCallPlan): Promise<XaiOutcome> {
   const log = (m: string) => d.log?.(d.keys.scrub(m));
   const sleep = d.sleep ?? realSleep;
   const random = d.random ?? Math.random;
   const attempts: AttemptLog[] = [];
 
-  // Capabilities (G6, F11): nothing is sent for an unsupported setting.
-  const mapped = mapRatio(req.ratio);
-  if ("error" in mapped) return { kind: "error", code: "bad_input", message: mapped.error, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: null };
-  const prompt = req.prompt.trim();
-  if (!prompt) return { kind: "error", code: "bad_input", message: "Type a prompt first.", clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: null };
-  if (prompt.length > CAPABILITIES.maxPromptChars) return { kind: "error", code: "bad_input", message: `Not supported by Grok: prompts over ${CAPABILITIES.maxPromptChars} characters`, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: null };
-  const resolution = resolutionFor(d.switches);
-  const q = qualityFor(d.switches, "generate");
-
-  // Free key check before the first paid call (F1).
-  const kc = await checkKey(d);
-  if (!kc.ok) return { kind: "error", code: kc.code, message: kc.message, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: mapped.send };
-
-  const est = estimate(d.db, d.prices, { provider: "xai", model: MODEL, kind: "generate", resolution, quality: q.priceQuality });
-  const body: Record<string, unknown> = { model: MODEL, prompt, n: 1, aspect_ratio: mapped.send, resolution, response_format: "b64_json" };
-  if (q.send) body.quality = q.priceQuality;
-
   let retries429 = 0, retriedConnection = false;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let res;
     try {
-      res = reserve(d.db, { provider: "xai", model: MODEL, kind: "generate", resolution, quality: q.priceQuality, generationId: req.generationId, attempt, estimateMicros: est.micros, estimateSource: est.source });
+      res = reserve(d.db, { provider: "xai", model: MODEL, kind: plan.kind, resolution: resolutionFor(d.switches), quality: qualityFor(d.switches, plan.kind).priceQuality, generationId: plan.generationId, attempt, estimateMicros: plan.estMicros, estimateSource: plan.estSource });
     } catch (e) {
       if (e instanceof CapRefused) {
-        log(`xai generate gen=${req.generationId} attempt=${attempt} refused by cap before sending`);
-        return { kind: "error", code: "cap", message: e.message, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: mapped.send };
+        log(`${plan.logTag} attempt=${attempt} refused by cap before sending`);
+        return { kind: "error", code: "cap", message: e.message, clientRequestId: null, providerRequestId: null, cost: null, attempts, sentRatio: plan.sentRatio };
       }
       throw e;
     }
     const id = res.id;
-    const r = await attemptOnce(d.fetch, { method: "POST", url: `${d.baseUrl ?? XAI_BASE_URL}/v1/images/generations`, headers: d.keys.authHeader(), body, timeoutMs: d.timeoutMs ?? CLOUD_TIMEOUT_MS });
+    const r = await attemptOnce(d.fetch, { method: "POST", url: plan.url, headers: d.keys.authHeader(), body: plan.body, timeoutMs: d.timeoutMs ?? CLOUD_TIMEOUT_MS });
     const providerRequestId = r.headers["x-request-id"] ?? null;
     const trace = traceOf(r);
     if (d.switches.xaiDataRetention === "zdr") log(`xai x-zero-data-retention=${r.headers["x-zero-data-retention"] ?? "(absent)"}`);
@@ -228,7 +232,7 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
     const late = (e: unknown, x: { httpStatus: number | null; outcome: string; actualMicros: number | null; costSource: string | null; reason: string; note: string | null }): CostInfo => {
       if (!(e instanceof RowNotReserved)) throw e;
       const now = recordLateResult(d.db, id, { ...x, providerRequestId, providerTrace: trace });
-      log(`xai generate gen=${req.generationId} ref=${id} attempt=${attempt} late result: row was already ${now.status ?? "missing"}; recorded as a late_result event`);
+      log(`${plan.logTag} ref=${id} attempt=${attempt} late result: row was already ${now.status ?? "missing"}; recorded as a late_result event`);
       return now.status === "settled" ? { micros: now.actualMicros, source: (now.costSource ?? "unresolved") as CostInfo["source"], heldMicros: 0 } : { micros: null, source: "unresolved", heldMicros: now.countedMicros };
     };
 
@@ -240,9 +244,9 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
         late(e, { httpStatus: null, outcome: "no_connection", actualMicros: 0, costSource: "not_sent", reason: `no connection (${r.errorCode ?? "unknown"})`, note: null });
       }
       attempts.push({ clientRequestId: id, status: null, outcome: "no_connection", costMicros: 0, costSource: "not_sent" });
-      log(`xai generate gen=${req.generationId} ref=${id} attempt=${attempt} no connection (${r.errorCode})`);
+      log(`${plan.logTag} ref=${id} attempt=${attempt} no connection (${r.errorCode})`);
       if (!retriedConnection && attempt < MAX_ATTEMPTS) { retriedConnection = true; continue; }
-      return { kind: "error", code: "unavailable", message: `Couldn't reach xAI (${r.errorCode === "ECONNREFUSED" ? "connection refused" : r.errorCode ?? "no connection"}).`, clientRequestId: id, providerRequestId: null, cost: { micros: 0, source: "not_sent", heldMicros: 0 }, attempts, sentRatio: mapped.send };
+      return { kind: "error", code: "unavailable", message: `Couldn't reach xAI (${r.errorCode === "ECONNREFUSED" ? "connection refused" : r.errorCode ?? "no connection"}).`, clientRequestId: id, providerRequestId: null, cost: { micros: 0, source: "not_sent", heldMicros: 0 }, attempts, sentRatio: plan.sentRatio };
     }
 
     // Parse the image (if any) before costing: a 200 without an image is held, not priced (F9/F15).
@@ -250,7 +254,7 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
     const first = r.outcome === "ok" && j && Array.isArray(j.data) ? j.data[0] : undefined;
     const b64 = first && typeof first.b64_json === "string" && first.b64_json.length > 0 ? first.b64_json : null;
     let cost: StepCost;
-    try { cost = attemptCost(r, est.micros, b64 !== null, d.switches); } catch (e) {
+    try { cost = attemptCost(r, plan.estMicros, b64 !== null, d.switches); } catch (e) {
       cost = { usd: null, basis: `unresolved: cost rule threw (${(e as Error).name})`, billed: false };
     }
     // Every 429 (quota-matched or not) keeps its scrubbed body excerpt so the quota word list can be tightened
@@ -265,7 +269,7 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
       } catch (e) {
         return late(e, { httpStatus: r.status, outcome: r.outcome, actualMicros: null, costSource: null, reason, note });
       }
-      return { micros: null, source: "unresolved", heldMicros: est.micros };
+      return { micros: null, source: "unresolved", heldMicros: plan.estMicros };
     };
     let costInfo: CostInfo;
     if (cost.usd === null) costInfo = hold(cost.basis);
@@ -284,9 +288,9 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
       }
     }
     attempts.push({ clientRequestId: id, status: r.status, outcome: r.outcome, costMicros: costInfo.micros, costSource: costInfo.source });
-    log(`xai generate gen=${req.generationId} ref=${id} attempt=${attempt} outcome=${r.outcome} status=${r.status} latency=${r.latency_ms}ms cost=${costInfo.micros === null ? `held ${fmtUsd(est.micros)}` : fmtUsd(costInfo.micros)} (${costInfo.source})`);
-    const held = fmtUsd(est.micros);
-    const err = (code: ErrorCode, message: string): XaiOutcome => ({ kind: "error", code, message, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: mapped.send });
+    log(`${plan.logTag} ref=${id} attempt=${attempt} outcome=${r.outcome} status=${r.status} latency=${r.latency_ms}ms cost=${costInfo.micros === null ? `held ${fmtUsd(plan.estMicros)}` : fmtUsd(costInfo.micros)} (${costInfo.source})`);
+    const held = fmtUsd(plan.estMicros);
+    const err = (code: ErrorCode, message: string): XaiOutcome => ({ kind: "error", code, message, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: plan.sentRatio });
 
     if (r.outcome === "timeout") return err("timeout", `Grok timed out after ${Math.round((d.timeoutMs ?? CLOUD_TIMEOUT_MS) / 1000)} s. It may still have been charged; ${held} is held against your cap until you check.`);
     if (r.outcome === "connection_error") return err("unavailable", `The connection to xAI dropped after the request was sent${r.errorCode ? ` (${r.errorCode})` : ""}. It may still have been charged; ${held} is held against your cap until you check.`);
@@ -294,10 +298,10 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
     const st = r.status as number;
     if (st >= 200 && st < 300) {
       if (r.oversize || j === null || typeof j !== "object") return err("unavailable", `xAI sent a response the app couldn't read (HTTP ${st}).`);
-      if (b64 === null) return { kind: "refused", message: `Refused by xAI: xAI returned no image.${r.text && !Array.isArray(j.data) ? ` ${providerText(r, d.keys)}` : ""}`, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: mapped.send };
-      if (first?.respect_moderation === false) return { kind: "refused", message: "Refused by xAI: xAI marked this image as filtered.", clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: mapped.send };
+      if (b64 === null) return { kind: "refused", message: `Refused by xAI: xAI returned no image.${r.text && !Array.isArray(j.data) ? ` ${providerText(r, d.keys)}` : ""}`, clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: plan.sentRatio };
+      if (first?.respect_moderation === false) return { kind: "refused", message: "Refused by xAI: xAI marked this image as filtered.", clientRequestId: id, providerRequestId, cost: costInfo, attempts, sentRatio: plan.sentRatio };
       const image = Buffer.from(b64, "base64");
-      return { kind: "ok", image, mime: typeof first?.mime_type === "string" ? first.mime_type : null, clientRequestId: id, providerRequestId, providerTrace: trace, cost: costInfo, latencyMs: r.latency_ms, attempts, modelVersionListing: kc.versionListing, sentRatio: mapped.send };
+      return { kind: "ok", image, mime: typeof first?.mime_type === "string" ? first.mime_type : null, clientRequestId: id, providerRequestId, providerTrace: trace, cost: costInfo, latencyMs: r.latency_ms, attempts, modelVersionListing: plan.versionListing, sentRatio: plan.sentRatio };
     }
     // Amendment 1 item 19 / F8 / A1 pin 10, line 361 / A1 pin 15, line 366: a 429 that is about quota, credits or
     // billing (xAI's shape is UNVERIFIED, so this matches the words in the body, case-insensitively) is a quota
@@ -311,7 +315,7 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
       else if (retries429 < 2) waitMs = Math.round((retries429 === 0 ? 2000 : 4000) * (0.8 + 0.4 * random()));
       if (waitMs !== null && attempt < MAX_ATTEMPTS) {
         retries429++;
-        log(`xai generate gen=${req.generationId} waiting for rate limit ${waitMs} ms`);
+        log(`${plan.logTag} waiting for rate limit ${waitMs} ms`);
         await sleep(waitMs);
         continue;
       }
@@ -331,5 +335,74 @@ export async function generate(d: XaiDeps, req: { prompt: string; ratio: string;
     return err("unavailable", `xAI returned HTTP ${st}: ${providerText(r, d.keys)}`);
   }
   // Unreachable: every loop path returns or continues with attempt < MAX_ATTEMPTS.
-  throw new Error("xai generate: attempt loop ended without a result");
+  throw new Error("xai call: attempt loop ended without a result");
+}
+
+// ---- generate ----
+
+export async function generate(d: XaiDeps, req: { prompt: string; ratio: string; generationId: string }): Promise<XaiOutcome> {
+  // Capabilities (G6, F11): nothing is sent for an unsupported setting.
+  const mapped = mapRatio(req.ratio);
+  if ("error" in mapped) return { kind: "error", code: "bad_input", message: mapped.error, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  const prompt = req.prompt.trim();
+  if (!prompt) return { kind: "error", code: "bad_input", message: "Type a prompt first.", clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  if (prompt.length > CAPABILITIES.maxPromptChars) return { kind: "error", code: "bad_input", message: `Not supported by Grok: prompts over ${CAPABILITIES.maxPromptChars} characters`, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+
+  // Reference images: none documented for xAI generation (capabilities). Refused before any network call.
+  if ((req as { reference?: unknown }).reference) return { kind: "error", code: "bad_input", message: "Not supported by Grok: reference images. Try the Google cards, or use Edit.", clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+
+  // Free key check before the first paid call (F1).
+  const kc = await checkKey(d);
+  if (!kc.ok) return { kind: "error", code: kc.code, message: kc.message, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: mapped.send };
+
+  const est = estimate(d.db, d.prices, { provider: "xai", model: MODEL, kind: "generate", resolution: resolutionFor(d.switches), quality: qualityFor(d.switches, "generate").priceQuality });
+  const q = qualityFor(d.switches, "generate");
+  const body: Record<string, unknown> = { model: MODEL, prompt, n: 1, aspect_ratio: mapped.send, resolution: resolutionFor(d.switches), response_format: "b64_json" };
+  if (q.send) body.quality = q.priceQuality;
+
+  return performXaiCall(d, {
+    kind: "generate",
+    url: `${d.baseUrl ?? XAI_BASE_URL}/v1/images/generations`,
+    body,
+    logTag: `xai generate gen=${req.generationId}`,
+    generationId: req.generationId,
+    sentRatio: mapped.send,
+    estMicros: est.micros,
+    estSource: est.source,
+    versionListing: kc.versionListing,
+  });
+}
+
+// ---- edit (A3) ----
+
+export interface XaiEditReq { instruction: string; image: Buffer; mime: string | null; generationId: string }
+
+/** Edit by description: the source image rides inline as a data URI (spike-results/xai/02-edit-background-red.json).
+ *  No aspect_ratio is sent: the edit keeps the source ratio (D2's crop path is an xAI-generate rule only). */
+export async function edit(d: XaiDeps, req: XaiEditReq): Promise<XaiOutcome> {
+  const instruction = req.instruction.trim();
+  if (!instruction) return { kind: "error", code: "bad_input", message: "Type an instruction first.", clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  if (instruction.length > CAPABILITIES.maxPromptChars) return { kind: "error", code: "bad_input", message: `Not supported by Grok: instructions over ${CAPABILITIES.maxPromptChars} characters`, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  if (!CAPABILITIES.edit) return { kind: "error", code: "bad_input", message: "Not supported by Grok: edits.", clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+  if (!req.image || req.image.length === 0) return { kind: "error", code: "bad_input", message: "The source image is missing; nothing was sent.", clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+
+  // Free key check before the first paid call (F1).
+  const kc = await checkKey(d);
+  if (!kc.ok) return { kind: "error", code: kc.code, message: kc.message, clientRequestId: null, providerRequestId: null, cost: null, attempts: [], sentRatio: null };
+
+  const est = estimate(d.db, d.prices, { provider: "xai", model: MODEL, kind: "edit", resolution: resolutionFor(d.switches), quality: qualityFor(d.switches, "edit").priceQuality });
+  const dataUri = `data:${req.mime ?? "image/jpeg"};base64,${req.image.toString("base64")}`;
+  const body: Record<string, unknown> = { model: MODEL, prompt: instruction, image: { type: "image_url", url: dataUri }, n: 1, response_format: "b64_json" };
+
+  return performXaiCall(d, {
+    kind: "edit",
+    url: `${d.baseUrl ?? XAI_BASE_URL}/v1/images/edits`,
+    body,
+    logTag: `xai edit gen=${req.generationId}`,
+    generationId: req.generationId,
+    sentRatio: null,
+    estMicros: est.micros,
+    estSource: est.source,
+    versionListing: kc.versionListing,
+  });
 }

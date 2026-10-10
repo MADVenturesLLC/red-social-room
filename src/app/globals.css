@@ -22,3 +22,8 @@ button.secondary { background: transparent; color: inherit; }
 table { border-collapse: collapse; width: 100%; font-size: .9rem; }
 td, th { border-bottom: 1px solid var(--bg2); padding: .3rem; text-align: left; }
 .badge { background: var(--red); color: #fff; border-radius: 999px; padding: 0 .4rem; font-size: .75rem; vertical-align: super; margin-left: .2rem; }
+.strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: .5rem; }
+.strip .v { background: transparent; border: 1px solid var(--bg2); color: inherit; text-align: left; padding: .4rem; display: flex; flex-direction: column; gap: .3rem; cursor: pointer; }
+.strip .v img { width: 100%; height: auto; border-radius: 4px; display: block; }
+.strip .v[data-selected="true"] { outline: 2px solid var(--red); }
+.strip .v.failed { border-color: var(--red); }
