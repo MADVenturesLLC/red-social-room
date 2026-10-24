@@ -131,6 +131,16 @@ A7 (TECH-PLAN-v1.md :222-224; amendment F17/F23 and FD:6) adds:
 
 One manual step stays in Settings → Spend: entering the Google console total for the month (the A0 close-out item 21 reconcile).
 
+### B2: Prompt optimization ("Make basic prompts better")
+
+B2 (Amendment 1 section 4, Oct 13/18 revisions) adds **Optimize prompt** directly on the Create page:
+
+- **One-click prompt enhancement**: beside "Save as snippet", **Optimize prompt** sends the typed prompt to the existing Google text model (**Gemini 3.1 Flash-Lite**, paid tier, $0.25/$1.50 per 1M tokens) on the same `/v1beta/interactions` endpoint with `store: false`.
+- **Image-tuned rewriting**: expands basic, short prompts into vivid, high-yield image prompts (lighting, composition, mood, texture, camera/medium cues) tailored for Grok Imagine 2.0 and Gemini Nano Banana 2, while strictly preserving the user's original concept and intent.
+- **One-click Undo**: on return, the textarea is updated with the enhanced prompt, and an **Undo** button appears to restore the original prompt at any time.
+- **Cost & ledger guard**: reserved before sending under kind `prompt_optimize` against the shared monthly cap ($0.005 reservation, settles from API usage tokens at ~$0.0003 per call).
+- **Safety**: the real-person check runs before sending, and runs again at Generate on the final prompt. No image provider is called during optimization.
+
 ### Run it locally (no Docker)
 
 ```

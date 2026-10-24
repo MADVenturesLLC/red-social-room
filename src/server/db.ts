@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS spend_ledger (
   month_ny TEXT NOT NULL CHECK (month_ny GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
   provider TEXT NOT NULL CHECK (provider IN ('xai','google')),
   model TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('generate','edit','outpaint','caption','adjustment','prompt_check')), -- prompt_check: A1 pin 5, line 356
+  kind TEXT NOT NULL CHECK (kind IN ('generate','edit','outpaint','caption','adjustment','prompt_check','prompt_optimize')), -- prompt_check: A1 pin 5; prompt_optimize: B2
   resolution TEXT, quality TEXT,                         -- price key for the item 2d max rule (open question)
   generation_id TEXT,
   attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt BETWEEN 1 AND 3),
@@ -323,6 +323,38 @@ export function openDb(path: string, opts: { spikeLedgerPath?: string | null; se
  */
 function migrateLedger(db: DB): void {
   db.exec("DROP VIEW IF EXISTS spend_by_month_provider; DROP VIEW IF EXISTS spend_by_month; DROP VIEW IF EXISTS spend_counted;");
+  const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'spend_ledger'").get() as { sql?: string } | undefined)?.sql;
+  if (sql && !sql.includes("'prompt_optimize'")) {
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE spend_ledger_b2 (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        month_ny TEXT NOT NULL CHECK (month_ny GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
+        provider TEXT NOT NULL CHECK (provider IN ('xai','google')),
+        model TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('generate','edit','outpaint','caption','adjustment','prompt_check','prompt_optimize')),
+        resolution TEXT, quality TEXT,
+        generation_id TEXT,
+        attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt BETWEEN 1 AND 3),
+        estimate_micro_usd INTEGER NOT NULL CHECK (estimate_micro_usd > 0),
+        estimate_source TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('reserved','settled','unresolved')),
+        actual_micro_usd INTEGER CHECK (actual_micro_usd IS NULL OR actual_micro_usd >= 0),
+        cost_source TEXT CHECK (cost_source IS NULL OR cost_source IN ('billed_provider','estimated_tokens','estimated_price_table','assumed_zero_rejected','assumed_zero_429','not_sent','manual_reconcile')),
+        cost_detail TEXT,
+        provider_request_id TEXT, provider_trace TEXT,
+        http_status INTEGER, outcome TEXT,
+        settled_at TEXT, note TEXT,
+        imported_from TEXT,
+        CHECK ((status = 'settled') = (actual_micro_usd IS NOT NULL))
+      );
+      INSERT INTO spend_ledger_b2 SELECT * FROM spend_ledger;
+      DROP TABLE spend_ledger;
+      ALTER TABLE spend_ledger_b2 RENAME TO spend_ledger;
+      PRAGMA foreign_keys = ON;
+    `);
+  }
 }
 
 /**

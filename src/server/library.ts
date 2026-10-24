@@ -2,8 +2,9 @@
 // A7 adds: search by tag (?tag=), the tag list with counts, per-post reuse data, and post deletion
 // (housekeeping — post rows and their captions/tags/renditions go; the content-addressed files stay,
 // because they are shared by other posts once anything references them).
+import { randomUUID } from "node:crypto";
 import { isoNY } from "../../spike/lib/ledger.ts";
-import type { DB } from "./db.ts";
+import { tx, type DB } from "./db.ts";
 
 export class LibraryError extends Error {
   constructor(message: string) { super(message); this.name = "LibraryError"; }
@@ -22,6 +23,33 @@ export function savePost(db: DB, generationId: unknown, notes: unknown = ""): { 
   if (existing) return { id: Number(existing.id), already: true };
   const r = db.prepare("INSERT INTO posts (created_at, generation_id, asset_id, prompt, model, notes) VALUES (?, ?, ?, ?, ?, ?)").run(isoNY(), g.id, g.display_asset_id, g.prompt, g.model, n);
   return { id: Number(r.lastInsertRowid), already: false };
+}
+
+/** Direct save for an uploaded image: creates post directly without AI model alteration (zero spend). */
+export function saveUploadedPost(db: DB, input: { assetId: unknown; prompt?: unknown; notes?: unknown }): { id: number; already: boolean } {
+  const assetId = typeof input.assetId === "string" ? input.assetId.trim() : "";
+  if (!/^[a-f0-9]{64}$/.test(assetId)) throw new LibraryError("Unknown image.");
+  const a = db.prepare("SELECT id, mime FROM assets WHERE id = ?").get(assetId) as { id: string; mime: string } | undefined;
+  if (!a) throw new LibraryError("That image is not in the store.");
+
+  const prompt = typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : "Uploaded image";
+  const n = typeof input.notes === "string" ? input.notes.trim() : "";
+  if (n.length > 2000) throw new LibraryError("Notes are limited to 2,000 characters.");
+
+  const existing = db.prepare("SELECT id FROM posts WHERE asset_id = ? AND model = 'upload'").get(assetId) as { id: number } | undefined;
+  if (existing) return { id: Number(existing.id), already: true };
+
+  const genId = randomUUID();
+  const runId = randomUUID();
+  const now = isoNY();
+
+  return tx(db, () => {
+    db.prepare("INSERT INTO runs (id, created_at, prompt, status) VALUES (?, ?, ?, 'ok')").run(runId, now, prompt);
+    db.prepare(`INSERT INTO generations (id, run_id, created_at, provider, model, kind, prompt, params, status, output_asset_id, display_asset_id)
+      VALUES (?, ?, ?, 'upload', 'upload', 'generate', ?, '{}', 'ok', ?, ?)`).run(genId, runId, now, prompt, assetId, assetId);
+    const r = db.prepare("INSERT INTO posts (created_at, generation_id, asset_id, prompt, model, notes, source_asset_id) VALUES (?, ?, ?, ?, 'upload', ?, ?)").run(now, genId, assetId, prompt, n, assetId);
+    return { id: Number(r.lastInsertRowid), already: false };
+  });
 }
 
 /** User text -> FTS5 query: each word quoted (no FTS syntax from the user), prefix match, all words required. */
