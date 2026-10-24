@@ -1,5 +1,5 @@
 import { getApp } from "../../../server/app.ts";
-import { savePost, searchPosts, LibraryError } from "../../../server/library.ts";
+import { savePost, saveUploadedPost, searchPosts, LibraryError } from "../../../server/library.ts";
 import { guardPost, json, readJson } from "../../../server/route-util.ts";
 import { notWritableResponse } from "../../../server/writable.ts";
 
@@ -17,7 +17,11 @@ export async function POST(req: Request): Promise<Response> {
   const app = getApp();
   const ro = notWritableResponse(app.dataDir); if (ro) return ro; // pin 19 (d) gap 2
   try {
-    return json(savePost(app.db, body.generationId, body.notes));
+    const b = body as Record<string, unknown>;
+    if (typeof b.assetId === "string" && b.assetId) {
+      return json(saveUploadedPost(app.db, { assetId: b.assetId, prompt: b.prompt, notes: b.notes }));
+    }
+    return json(savePost(app.db, b.generationId, b.notes));
   } catch (e) {
     if (e instanceof LibraryError) return json({ error: e.message }, 400);
     return json({ error: "Save failed inside the app." }, 500);
