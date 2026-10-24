@@ -203,7 +203,7 @@ export function googleDepsOf(d: AppDeps): GoogleDeps {
 
 /** The OpenAI adapter's deps slice of the app. */
 export function openaiDepsOf(d: AppDeps): OpenAiDeps {
-  if (!d.openaiKeys) d.openaiKeys = new KeyStore({ secretsDir: join(d.dataDir, "secrets"), provider: "openai", env: {} });
+  if (!d.openaiKeys) d.openaiKeys = new KeyStore({ secretsDir: join(d.dataDir, "secrets"), provider: "openai", env: {} as NodeJS.ProcessEnv });
   if (!d.openaiKeyCheck) d.openaiKeyCheck = { fingerprint: null, ok: false, versionListing: null };
   return {
     kind: "openai",
