@@ -109,12 +109,26 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
   useEffect(() => stopWatch, []);
 
   async function start(
-    withCreators: Array<{ id: string; n: number }> = chosen.map((c) => ({ id: c.id, n: counts[c.id] ?? 1 })),
-    refAssetId: string | null = (attachedAsset && useAsReference ? attachedAsset.assetId : null)
+    withCreators?: Array<{ id: string; n: number }>
   ) {
     setBusy(true); setRun(null); setNetError(null); setSaved({}); setDirectPostMsg(null);
-    const body: Record<string, unknown> = { prompt, ratio, creators: withCreators };
-    if (refAssetId) body.referenceAssetId = refAssetId;
+    let creatorsToSend = withCreators ?? chosen.map((c) => ({ id: c.id, n: counts[c.id] ?? 1 }));
+    const body: Record<string, unknown> = { prompt, ratio };
+    if (attachedAsset) {
+      if (useAsReference) {
+        const refChosen = chosen.filter((c) => c.maxReferenceImages > 0).map((c) => ({ id: c.id, n: counts[c.id] ?? 1 }));
+        if (refChosen.length > 0) {
+          creatorsToSend = withCreators ?? refChosen;
+          body.referenceAssetId = attachedAsset.assetId;
+        } else {
+          // If only non-reference creators (like Grok) are ticked, still pass the image via sourceAssetId so it uses the attached photo
+          body.sourceAssetId = attachedAsset.assetId;
+        }
+      } else {
+        body.sourceAssetId = attachedAsset.assetId;
+      }
+    }
+    body.creators = creatorsToSend;
     const r = await postJson<{ runId?: string; blocked?: boolean; run?: RunView; error?: string }>("/api/run", body);
     setBusy(false);
     if (r.data?.run && r.data.runId) {
@@ -170,7 +184,7 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
     setOptimizeMsg(null);
     setOptimizeError(false);
     const prev = prompt;
-    const r = await postJson<{ kind?: "ok" | "blocked" | "error"; optimized?: string; message?: string; cost?: { micros?: number | null }; error?: string }>("/api/optimize", { prompt });
+    const r = await postJson<{ kind?: "ok" | "blocked" | "error"; optimized?: string; message?: string; cost?: { micros?: number | null }; error?: string }>("/api/optimize", { prompt, hasAttachedImage: !!attachedAsset });
     setOptimizing(false);
     if (r.ok && r.data?.kind === "ok" && r.data.optimized) {
       setUndoPrompt(prev);
@@ -316,17 +330,20 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
           <div className="row" style={{ alignItems: "center" }}>
             <img src={`/api/assets/${attachedAsset.assetId}`} alt="Attached" width={72} height={72} style={{ objectFit: "cover", borderRadius: 6 }} />
             <div style={{ flex: 1 }}>
-              <strong>Attached picture ({attachedAsset.assetId.slice(0, 8)})</strong>
+              <strong>Attached picture ({attachedAsset.assetId.slice(0, 8)}) — Active for prompt</strong>
               <label style={{ display: "block", marginTop: "4px" }}>
                 <input type="checkbox" checked={useAsReference} onChange={(e) => setUseAsReference(e.target.checked)} />
-                {" "}Use as reference image for AI generation (Nano Banana 2)
+                {" "}Use as style/subject reference for a new composition (instead of editing this photo directly)
               </label>
               <p className="muted" style={{ margin: "2px 0 0 0" }}>
                 {useAsReference
-                  ? "AI will generate a new image referencing this picture and your prompt."
-                  : "This uploaded picture will be used directly as your post (zero spend). Ready for Design, Captions, and Export."}
+                  ? "AI will generate a brand-new image referencing this picture and your prompt."
+                  : "Default: Grok Imagine, Nano Banana, and ChatGPT will directly enhance/edit THIS photo using your prompt, or click 'Save Raw Photo as Post' to use it unmodified ($0)."}
               </p>
             </div>
+            <button type="button" className="secondary" onClick={() => void saveDirectPost(attachedAsset.assetId)} disabled={busy || running}>
+              Save Raw Photo as Post ($0)
+            </button>
             <button type="button" className="secondary" onClick={() => { setAttachedAsset(null); setUseAsReference(false); }}>Detach</button>
           </div>
         </div>
@@ -364,9 +381,14 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
       ) : null}
 
       {attachedAsset && !useAsReference ? (
-        <button onClick={() => void saveDirectPost(attachedAsset.assetId)} disabled={busy || running}>
-          {busy ? "Saving post…" : "Use Picture as Post"}
-        </button>
+        <div className="row">
+          <button onClick={() => void start()} disabled={busy || running || !prompt.trim() || chosen.length === 0}>
+            {busy || running ? "Enhancing photo… (up to 2 min)" : "Generate with Attached Picture"}
+          </button>
+          <button type="button" className="secondary" onClick={() => void saveDirectPost(attachedAsset.assetId)} disabled={busy || running}>
+            {busy ? "Saving post…" : "Use Raw Picture as Post ($0)"}
+          </button>
+        </div>
       ) : attachedAsset && useAsReference ? (
         <button onClick={() => void start()} disabled={busy || running || !prompt.trim() || chosen.length === 0}>
           {busy || running ? "Making… (up to 2 min)" : "Generate with Reference"}

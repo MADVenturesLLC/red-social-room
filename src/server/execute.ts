@@ -8,15 +8,17 @@
 import { isoNY } from "../../spike/lib/ledger.ts";
 import { generate as xaiGenerate, edit as xaiEdit, type XaiDeps, type CostInfo } from "./xai/adapter.ts";
 import { generate as googleGenerate, edit as googleEdit, type GoogleDeps, type GoogleOutcome } from "./google/adapter.ts";
+import { generate as openaiGenerate, edit as openaiEdit, type OpenAiDeps, type OpenAiOutcome } from "./openai/adapter.ts";
 import { putImage, cropTo, readStored, StoreError, type StoredImage } from "./store.ts";
 import { checkWritable } from "./writable.ts";
 import { fmtUsd } from "./ledger.ts";
 import { tx, type DB } from "./db.ts";
+import { KeyStore } from "./keys.ts";
+import { join } from "node:path";
 import type { PromptCheckMethod } from "./prompt-check.ts";
 import type { KeyCheckCache, XaiOutcome } from "./xai/adapter.ts";
-import type { KeyStore } from "./keys.ts";
 
-export type ProviderId = "xai" | "google";
+export type ProviderId = "xai" | "google" | "openai";
 
 export interface AppDeps extends XaiDeps {
   dataDir: string;
@@ -26,6 +28,10 @@ export interface AppDeps extends XaiDeps {
   googleKeys: KeyStore;
   googleKeyCheck: KeyCheckCache;
   googleBaseUrl?: string;
+  /** OpenAI (ChatGPT / GPT Image) side of the app. */
+  openaiKeys?: KeyStore;
+  openaiKeyCheck?: KeyCheckCache;
+  openaiBaseUrl?: string;
 }
 
 export interface GenerateView {
@@ -107,9 +113,11 @@ export async function executeGeneration(d: AppDeps, input: GenExecInput): Promis
     reference = loadSourceAsset(d, input.referenceAssetId);
   }
 
-  const out: XaiOutcome | GoogleOutcome = input.provider === "xai"
+  const out: XaiOutcome | GoogleOutcome | OpenAiOutcome = input.provider === "xai"
     ? await xaiGenerate(d, { prompt: input.prompt, ratio: input.ratio, generationId: input.generationId })
-    : await googleGenerate(googleDepsOf(d), { prompt: input.prompt, ratio: input.ratio, generationId: input.generationId, model: input.model, reference });
+    : input.provider === "openai"
+      ? await openaiGenerate(openaiDepsOf(d), { prompt: input.prompt, ratio: input.ratio, generationId: input.generationId, model: input.model, reference })
+      : await googleGenerate(googleDepsOf(d), { prompt: input.prompt, ratio: input.ratio, generationId: input.generationId, model: input.model, reference });
   view.costText = costText(out.cost);
   view.ref = out.clientRequestId;
 
@@ -129,9 +137,9 @@ export async function executeGeneration(d: AppDeps, input: GenExecInput): Promis
     const original = putImage(d.imagesDir, out.image);
     let display = original;
     let note: string | null = providerNote;
-    if (input.provider === "xai" && input.ratio === "4:5" && !input.referenceAssetId) { // D2: xAI only; Google supports 4:5 directly
+    if ((input.provider === "xai" || input.provider === "openai") && input.ratio === "4:5" && !input.referenceAssetId) {
       display = putImage(d.imagesDir, await cropTo(out.image, 4, 5));
-      const crop = "Made at 3:4, cropped to 4:5";
+      const crop = input.provider === "xai" ? "Made at 3:4, cropped to 4:5" : "Made at 2:3, cropped to 4:5";
       note = note ? `${note} · ${crop}` : crop;
     }
     tx(d.db, () => { insertAsset(d.db, original); if (display !== original) insertAsset(d.db, display); });
@@ -153,9 +161,11 @@ export async function executeEdit(d: AppDeps, input: EditExecInput): Promise<Gen
   const common = { runId: input.runId, provider: input.provider, model: input.model, generationId: input.generationId, prompt: input.instruction, ratio: "source", kind: "edit" as const, parent_asset_id: input.sourceAssetId };
 
   const src = loadSourceAsset(d, input.sourceAssetId);
-  const out: XaiOutcome | GoogleOutcome = input.provider === "xai"
+  const out: XaiOutcome | GoogleOutcome | OpenAiOutcome = input.provider === "xai"
     ? await xaiEdit(d, { instruction: input.instruction, image: src.image, mime: src.mime, generationId: input.generationId })
-    : await googleEdit(googleDepsOf(d), { instruction: input.instruction, image: src.image, mime: src.mime, generationId: input.generationId, model: input.model, aspectRatio: input.aspectRatio ?? null });
+    : input.provider === "openai"
+      ? await openaiEdit(openaiDepsOf(d), { instruction: input.instruction, image: src.image, mime: src.mime, generationId: input.generationId, model: input.model })
+      : await googleEdit(googleDepsOf(d), { instruction: input.instruction, image: src.image, mime: src.mime, generationId: input.generationId, model: input.model, aspectRatio: input.aspectRatio ?? null });
   view.costText = costText(out.cost);
   view.ref = out.clientRequestId;
 
@@ -188,5 +198,17 @@ export function googleDepsOf(d: AppDeps): GoogleDeps {
     db: d.db, keys: d.googleKeys, prices: d.prices, switches: d.switches, fetch: d.fetch,
     baseUrl: d.googleBaseUrl, timeoutMs: d.timeoutMs, keyCheckTimeoutMs: d.keyCheckTimeoutMs,
     sleep: d.sleep, random: d.random, log: d.log, keyCheck: d.googleKeyCheck,
+  };
+}
+
+/** The OpenAI adapter's deps slice of the app. */
+export function openaiDepsOf(d: AppDeps): OpenAiDeps {
+  if (!d.openaiKeys) d.openaiKeys = new KeyStore({ secretsDir: join(d.dataDir, "secrets"), provider: "openai", env: {} });
+  if (!d.openaiKeyCheck) d.openaiKeyCheck = { fingerprint: null, ok: false, versionListing: null };
+  return {
+    kind: "openai",
+    db: d.db, keys: d.openaiKeys, prices: d.prices, switches: d.switches, fetch: d.fetch,
+    baseUrl: d.openaiBaseUrl, timeoutMs: d.timeoutMs, keyCheckTimeoutMs: d.keyCheckTimeoutMs,
+    sleep: d.sleep, random: d.random, log: d.log, keyCheck: d.openaiKeyCheck,
   };
 }

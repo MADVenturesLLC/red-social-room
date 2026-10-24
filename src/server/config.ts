@@ -82,4 +82,4 @@ export function qualityFor(s: Switches, kind: "generate" | "edit"): { priceQuali
 
 /** A2 (Amendment 1 section 4 item 11; TECH-PLAN-v1-AMENDMENT-1.md:75): the job queue's per-provider
  *  concurrency stays static in config: xAI 2, Google 2. Never tuned from headers or load. */
-export const PROVIDER_CONCURRENCY: Readonly<Record<"xai" | "google", number>> = Object.freeze({ xai: 2, google: 2 });
+export const PROVIDER_CONCURRENCY: Readonly<Record<"xai" | "google" | "openai", number>> = Object.freeze({ xai: 2, google: 2, openai: 2 });

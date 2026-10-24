@@ -18,7 +18,8 @@ export async function POST(req: Request): Promise<Response> {
   const ro = notWritableResponse(app.dataDir); if (ro) return ro; // A1 pin 19 (d)
   try {
     const rawPrompt = typeof body.prompt === "string" ? body.prompt : "";
-    const out = await optimizePrompt(googleDepsOf(app), app.promptMethod, rawPrompt);
+    const hasAttachedImage = Boolean((body as Record<string, unknown>).hasAttachedImage);
+    const out = await optimizePrompt(googleDepsOf(app), app.promptMethod, rawPrompt, { hasAttachedImage });
     return json(out);
   } catch (e) {
     if (e instanceof OptimizeInputError) return json({ error: e.message }, 400);

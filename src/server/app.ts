@@ -12,7 +12,8 @@ import { loadPrices } from "./prices.ts";
 import { nameListMethod } from "./prompt-check.ts";
 import { checkKey, type KeyCheckCache } from "./xai/adapter.ts";
 import { checkGoogleKey } from "./google/adapter.ts";
-import { googleDepsOf } from "./execute.ts";
+import { checkOpenAiKey } from "./openai/adapter.ts";
+import { googleDepsOf, openaiDepsOf } from "./execute.ts";
 import { resetStrandedJobs } from "./runs.ts";
 import { startScheduler } from "./scheduler.ts";
 import type { AppDeps } from "./generate.ts";
@@ -47,25 +48,30 @@ export function getApp(): AppDeps {
   }
   const keys = new KeyStore({ secretsDir: join(dir, "secrets") });
   const googleKeys = new KeyStore({ secretsDir: join(dir, "secrets"), provider: "google" }); // A2
+  const openaiKeys = new KeyStore({ secretsDir: join(dir, "secrets"), provider: "openai" });
   const keyCheck: KeyCheckCache = { fingerprint: null, ok: false, versionListing: null };
   const googleKeyCheck: KeyCheckCache = { fingerprint: null, ok: false, versionListing: null };
-  const testBase = process.env.RSR_XAI_BASE_URL || process.env.RSR_GOOGLE_BASE_URL;
+  const openaiKeyCheck: KeyCheckCache = { fingerprint: null, ok: false, versionListing: null };
+  const testBase = process.env.RSR_XAI_BASE_URL || process.env.RSR_GOOGLE_BASE_URL || process.env.RSR_OPENAI_BASE_URL;
   const app: AppDeps = {
     db,
     keys,
     googleKeys,
+    openaiKeys,
     prices: loadPrices(),
     switches: loadSwitches(),
     fetch: (url, init) => fetch(url, init),
     baseUrl: xaiBaseUrlFromEnv(process.env.RSR_XAI_BASE_URL),
     googleBaseUrl: baseUrlFromEnv(process.env.RSR_GOOGLE_BASE_URL, "RSR_GOOGLE_BASE_URL"),
+    openaiBaseUrl: baseUrlFromEnv(process.env.RSR_OPENAI_BASE_URL, "RSR_OPENAI_BASE_URL"),
     timeoutMs: testBase && process.env.RSR_TEST_TIMEOUT_MS ? Number(process.env.RSR_TEST_TIMEOUT_MS) : undefined,
     keyCheck,
     googleKeyCheck,
+    openaiKeyCheck,
     dataDir: dir,
     imagesDir: join(dir, "images"),
     promptMethod: nameListMethod(join(REPO_ROOT, "config", "real-person-names.txt")),
-    log: (m) => console.log(`[rsr] ${new Date().toISOString()} ${keys.scrub(googleKeys.scrub(m))}`),
+    log: (m) => console.log(`[rsr] ${new Date().toISOString()} ${keys.scrub(googleKeys.scrub(openaiKeys.scrub(m)))}`),
   };
   g.__rsrApp = app;
   // A7: the in-process nightly job (backup at 3 AM New York; a daily search-index check). Tests build their
@@ -80,6 +86,7 @@ export function getApp(): AppDeps {
   // Free key checks at app start (Amendment 1 item 19). Not awaited; failures show on the cards and in Settings.
   if (keys.status().set) void checkKey(app).catch(() => undefined);
   if (googleKeys.status().set) void checkGoogleKey(googleDepsOf(app)).catch(() => undefined);
+  if (openaiKeys.status().set) void checkOpenAiKey(openaiDepsOf(app)).catch(() => undefined);
   return app;
 }
 

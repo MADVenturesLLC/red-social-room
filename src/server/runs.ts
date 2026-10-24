@@ -16,6 +16,7 @@ import { executeEdit, executeGeneration, recordGeneration, type AppDeps, type Ge
 import { generationCostText } from "./ledger.ts";
 import { CAPABILITIES as XAI_CAPS, MODEL as XAI_MODEL } from "./xai/adapter.ts";
 import { CAPABILITIES as GOOGLE_CAPS, MODEL as GOOGLE_MODEL, PRO_MODEL as GOOGLE_PRO_MODEL } from "./google/adapter.ts";
+import { CAPABILITIES as OPENAI_CAPS, MODEL as OPENAI_MODEL } from "./openai/adapter.ts";
 
 /** The creator cards: one per provider (Amendment 1 section 4 item 27). */
 export interface CreatorDef { id: string; provider: ProviderId; name: string; model: string; blurb: string }
@@ -24,10 +25,11 @@ export const CREATORS: readonly CreatorDef[] = Object.freeze([
   { id: "google", provider: "google", name: "Nano Banana 2", model: GOOGLE_MODEL, blurb: "Google" },
   // FD:11: Nano Banana Pro is its own card, off by default ("Nano Banana 2 is the default"), same Google key and pool.
   { id: "google-pro", provider: "google", name: "Nano Banana Pro", model: GOOGLE_PRO_MODEL, blurb: "Google" },
+  { id: "openai", provider: "openai", name: "ChatGPT (GPT Image)", model: OPENAI_MODEL, blurb: "OpenAI" },
 ]);
 
 function capsOf(def: CreatorDef): { edit: boolean; maxReferenceImages: number } {
-  return def.provider === "xai" ? XAI_CAPS : GOOGLE_CAPS;
+  return def.provider === "xai" ? XAI_CAPS : def.provider === "openai" ? OPENAI_CAPS : GOOGLE_CAPS;
 }
 
 export const MAX_IMAGES_PER_CREATOR = 4;
@@ -48,14 +50,14 @@ const runners = new WeakMap<AppDeps, Runner>();
 function runnerOf(d: AppDeps): Runner {
   let r = runners.get(d);
   if (!r) {
-    r = { queues: new Map([["xai", []], ["google", []]]), inflight: new Map([["xai", 0], ["google", 0]]), emitters: new Map() };
+    r = { queues: new Map([["xai", []], ["google", []], ["openai", []]]), inflight: new Map([["xai", 0], ["google", 0], ["openai", 0]]), emitters: new Map() };
     runners.set(d, r);
   }
   return r;
 }
 
 /** Parse and validate the /api/run body. */
-export function parseRunInput(body: unknown): { prompt: string; ratio: string; creators: Array<{ id: string; n: number }>; referenceAssetId?: string | null } {
+export function parseRunInput(body: unknown): { prompt: string; ratio: string; creators: Array<{ id: string; n: number }>; referenceAssetId?: string | null; sourceAssetId?: string | null } {
   const o = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
   const prompt = typeof o.prompt === "string" ? o.prompt.trim() : "";
   if (!prompt) throw new RunInputError("Type a prompt first.");
@@ -63,6 +65,7 @@ export function parseRunInput(body: unknown): { prompt: string; ratio: string; c
   const ratio = typeof o.ratio === "string" ? o.ratio : "";
   if (!ratio) throw new RunInputError("Pick an aspect ratio.");
   const referenceAssetId = typeof o.referenceAssetId === "string" && /^[a-f0-9]{64}$/.test(o.referenceAssetId) ? o.referenceAssetId : null;
+  const sourceAssetId = typeof o.sourceAssetId === "string" && /^[a-f0-9]{64}$/.test(o.sourceAssetId) ? o.sourceAssetId : null;
   const raw = Array.isArray(o.creators) ? o.creators : [];
   const seen = new Set<string>();
   const creators: Array<{ id: string; n: number }> = [];
@@ -72,15 +75,19 @@ export function parseRunInput(body: unknown): { prompt: string; ratio: string; c
     if (!def) throw new RunInputError(`Unknown creator: ${String(cc.id)}`);
     if (seen.has(def.id)) throw new RunInputError(`Creator ${def.id} is listed twice.`);
     seen.add(def.id);
+    if (sourceAssetId && !capsOf(def).edit) {
+      throw new RunInputError(`${def.name} can't edit images.`);
+    }
     if (referenceAssetId && capsOf(def).maxReferenceImages < 1) {
-      throw new RunInputError(`${def.name} can't take reference images. Use a Google card, or uncheck reference.`);
+      throw new RunInputError(`${def.name} can't take reference images. Use a Google or OpenAI card, or uncheck reference to edit the photo directly.`);
     }
     if (typeof cc.n !== "number" || !Number.isInteger(cc.n) || cc.n < 1 || cc.n > MAX_IMAGES_PER_CREATOR) throw new RunInputError(`Each creator makes 1-${MAX_IMAGES_PER_CREATOR} images.`);
     creators.push({ id: def.id, n: cc.n });
   }
   if (!creators.length) throw new RunInputError("Pick at least one creator.");
-  const out: { prompt: string; ratio: string; creators: Array<{ id: string; n: number }>; referenceAssetId?: string | null } = { prompt, ratio, creators };
+  const out: { prompt: string; ratio: string; creators: Array<{ id: string; n: number }>; referenceAssetId?: string | null; sourceAssetId?: string | null } = { prompt, ratio, creators };
   if (referenceAssetId) out.referenceAssetId = referenceAssetId;
+  if (sourceAssetId) out.sourceAssetId = sourceAssetId;
   return out;
 }
 
@@ -89,9 +96,12 @@ export function parseRunInput(body: unknown): { prompt: string; ratio: string; c
  * (or unavailable under P1c=block), the run is `blocked` up front: every job shows the reason, nothing is
  * sent, and no ledger row exists (F10).
  */
-export function startRun(d: AppDeps, input: { prompt: unknown; ratio: unknown; creators: unknown; referenceAssetId?: unknown }): { runId: string; blocked: boolean; message: string | null; label: string | null } {
-  const { prompt, ratio, creators, referenceAssetId } = parseRunInput(input);
-  if (referenceAssetId && !d.db.prepare("SELECT 1 FROM assets WHERE id = ?").get(referenceAssetId)) {
+export function startRun(d: AppDeps, input: { prompt: unknown; ratio: unknown; creators: unknown; referenceAssetId?: unknown; sourceAssetId?: unknown }): { runId: string; blocked: boolean; message: string | null; label: string | null } {
+  const { prompt, ratio, creators, referenceAssetId, sourceAssetId } = parseRunInput(input);
+  const parentId = sourceAssetId ?? referenceAssetId ?? null;
+  const jobKind: "generate" | "edit" = sourceAssetId ? "edit" : "generate";
+  const jobRatio = sourceAssetId ? "source" : ratio;
+  if (parentId && !d.db.prepare("SELECT 1 FROM assets WHERE id = ?").get(parentId)) {
     throw new RunInputError("That reference image is not in the store. Upload it first.");
   }
   checkWritable(d.dataDir);
@@ -100,12 +110,12 @@ export function startRun(d: AppDeps, input: { prompt: unknown; ratio: unknown; c
   const queued: Array<{ jobId: string; provider: ProviderId }> = [];
   tx(d.db, () => {
     d.db.prepare("INSERT INTO runs (id, created_at, prompt, status) VALUES (?, ?, ?, ?)").run(runId, isoNY(), prompt, pc.allowed ? "running" : "blocked");
-    const ins = d.db.prepare("INSERT INTO jobs (id, run_id, creator_id, provider, model, generation_id, prompt, ratio, status, label, kind, parent_asset_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generate', ?, ?)");
+    const ins = d.db.prepare("INSERT INTO jobs (id, run_id, creator_id, provider, model, generation_id, prompt, ratio, status, label, kind, parent_asset_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     for (const c of creators) {
       const def = CREATORS.find((x) => x.id === c.id)!;
       for (let i = 0; i < c.n; i++) {
         const jobId = randomUUID();
-        ins.run(jobId, runId, def.id, def.provider, def.model, randomUUID(), prompt, ratio, pc.allowed ? "queued" : "blocked", pc.allowed ? pc.label : null, referenceAssetId ?? null, isoNY());
+        ins.run(jobId, runId, def.id, def.provider, def.model, randomUUID(), prompt, jobRatio, pc.allowed ? "queued" : "blocked", pc.allowed ? pc.label : null, jobKind, parentId, isoNY());
         queued.push({ jobId, provider: def.provider });
       }
     }
@@ -113,7 +123,7 @@ export function startRun(d: AppDeps, input: { prompt: unknown; ratio: unknown; c
   if (!pc.allowed) {
     const rows = d.db.prepare("SELECT * FROM jobs WHERE run_id = ? ORDER BY created_at, id").all(runId) as unknown as RunJobRow[];
     for (const j of rows) {
-      recordGeneration(d, { runId, provider: j.provider, model: j.model, generationId: j.generation_id, prompt, ratio, parent_asset_id: referenceAssetId ?? null, status: pc.result === "blocked" ? "blocked" : "not_sent", error_code: pc.result, error_message: pc.message });
+      recordGeneration(d, { runId, provider: j.provider, model: j.model, generationId: j.generation_id, prompt, ratio: jobRatio, kind: jobKind, parent_asset_id: parentId, status: pc.result === "blocked" ? "blocked" : "not_sent", error_code: pc.result, error_message: pc.message });
     }
     return { runId, blocked: true, message: pc.message, label: pc.label };
   }

@@ -29,21 +29,24 @@ export class OptimizeInputError extends Error {
   constructor(message: string) { super(message); this.name = "OptimizeInputError"; }
 }
 
-export function buildOptimizePrompt(userPrompt: string): string {
-  return [
-    "You are an expert prompt engineer for text-to-image AI models (such as Grok Imagine 2.0 and Gemini Nano Banana 2).",
-    "Your task is to take the user's raw or basic image prompt and rewrite it into an expanded, high-yield image prompt that produces an extraordinary visual result.",
+export function buildOptimizePrompt(userPrompt: string, hasAttachedImage = false): string {
+  const baseRules = [
+    "You are an expert prompt engineer for AI image generation and photo editing models (Grok Imagine 2.0, Gemini Nano Banana 2, and OpenAI GPT Image).",
+    hasAttachedImage
+      ? "The user has attached their own photo to be edited/enhanced. Rewrite their instruction into a clear, vivid photo-editing prompt that enhances the attached photo while strictly preserving the identity, facial features, expressions, and core subjects of the original photo."
+      : "Your task is to take the user's raw or basic image prompt and rewrite it into an expanded, high-yield image prompt that produces an extraordinary visual result.",
     "",
     "Rules:",
     "1. Preserve the user's core subject, concept, and intent. Do NOT replace their idea with a completely different subject.",
     "2. Add rich, concrete visual descriptions: lighting (direction, quality, mood), composition and framing, environment/background context, materials, and textures.",
     "3. Use evocative photography or art direction terminology when appropriate (e.g. lens focal length, natural depth of field, dramatic backlight, soft diffuse shadow).",
-    "4. Do NOT use buzzwords like 'photorealistic', 'hyperrealistic', 'ultra hd', or '4k'. Use specific descriptive cues instead.",
+    "4. Do NOT prefix the output with 'Prompt:' or 'Optimized prompt:'. Return only the prompt text itself inside the JSON.",
     "5. Keep the optimized prompt concise, punchy, and vivid (typically 1 to 3 rich sentences, under 600 characters).",
     "6. Output ONLY JSON matching the requested schema with the key 'optimized'.",
     "",
     `User's prompt: ${JSON.stringify(userPrompt)}`,
-  ].join("\n");
+  ];
+  return baseRules.join("\n");
 }
 
 export const OPTIMIZE_SCHEMA = {
@@ -62,7 +65,8 @@ export function parseOptimizeReply(text: string): { ok: true; optimized: string 
   if (typeof obj.optimized !== "string" || !obj.optimized.trim()) {
     return { ok: false, error: "The reply did not contain an optimized prompt." };
   }
-  return { ok: true, optimized: obj.optimized.trim() };
+  const cleaned = obj.optimized.trim().replace(/^(?:optimized\s+)?prompt\s*:\s*/i, "").trim();
+  return { ok: true, optimized: cleaned || obj.optimized.trim() };
 }
 
 export function optimizeCostFromUsage(usage: unknown): { usd: number; detail: string } | { error: string } {
@@ -88,7 +92,12 @@ export interface OptimizeOutcome {
   latencyMs: number | null;
 }
 
-export async function optimizePrompt(d: GoogleDeps, promptMethod: PromptCheckMethod, userPrompt: string): Promise<OptimizeOutcome> {
+export async function optimizePrompt(
+  d: GoogleDeps,
+  promptMethod: PromptCheckMethod,
+  userPrompt: string,
+  opts: { hasAttachedImage?: boolean } = {}
+): Promise<OptimizeOutcome> {
   const trimmed = userPrompt.trim();
   if (!trimmed) throw new OptimizeInputError("Type a prompt first.");
   if (trimmed.length > 64000) throw new OptimizeInputError("Prompts are limited to 64,000 characters.");
@@ -127,7 +136,7 @@ export async function optimizePrompt(d: GoogleDeps, promptMethod: PromptCheckMet
     body: {
       model: OPTIMIZE_MODEL,
       input: [
-        { type: "text", text: buildOptimizePrompt(trimmed) },
+        { type: "text", text: buildOptimizePrompt(trimmed, !!opts.hasAttachedImage) },
       ],
       store: false,
       response_format: { type: "text", mime_type: "application/json", schema: OPTIMIZE_SCHEMA },
