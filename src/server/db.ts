@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS spend_ledger (
   id TEXT PRIMARY KEY,                                   -- = client_request_id (UUID v4)
   created_at TEXT NOT NULL,
   month_ny TEXT NOT NULL CHECK (month_ny GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
-  provider TEXT NOT NULL CHECK (provider IN ('xai','google')),
+  provider TEXT NOT NULL CHECK (provider IN ('xai','google','openai')),
   model TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('generate','edit','outpaint','caption','adjustment','prompt_check','prompt_optimize')), -- prompt_check: A1 pin 5; prompt_optimize: B2
   resolution TEXT, quality TEXT,                         -- price key for the item 2d max rule (open question)
@@ -324,14 +324,14 @@ export function openDb(path: string, opts: { spikeLedgerPath?: string | null; se
 function migrateLedger(db: DB): void {
   db.exec("DROP VIEW IF EXISTS spend_by_month_provider; DROP VIEW IF EXISTS spend_by_month; DROP VIEW IF EXISTS spend_counted;");
   const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'spend_ledger'").get() as { sql?: string } | undefined)?.sql;
-  if (sql && !sql.includes("'prompt_optimize'")) {
+  if (sql && (!sql.includes("'prompt_optimize'") || !sql.includes("'openai'"))) {
     db.exec(`
       PRAGMA foreign_keys = OFF;
       CREATE TABLE spend_ledger_b2 (
         id TEXT PRIMARY KEY,
         created_at TEXT NOT NULL,
         month_ny TEXT NOT NULL CHECK (month_ny GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
-        provider TEXT NOT NULL CHECK (provider IN ('xai','google')),
+        provider TEXT NOT NULL CHECK (provider IN ('xai','google','openai')),
         model TEXT NOT NULL,
         kind TEXT NOT NULL CHECK (kind IN ('generate','edit','outpaint','caption','adjustment','prompt_check','prompt_optimize')),
         resolution TEXT, quality TEXT,

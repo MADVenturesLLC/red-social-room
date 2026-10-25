@@ -55,15 +55,42 @@ export function GoogleKeyForm() {
   );
 }
 
+/** OpenAI (ChatGPT / GPT Image) key goes to secrets/openai_api_key through the same write-only route. */
+export function OpenAiKeyForm() {
+  const [value, setValue] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    const r = await postJson<KeyResp>("/api/settings/key", { key: value, provider: "openai" });
+    setValue("");
+    setBusy(false);
+    if (r.ok && r.data?.key) setMsg(`Saved. Key ending ${r.data.key.last4 ?? "????"}. ${r.data.check?.ok ? "Key check passed." : `Key check: ${r.data.check?.message ?? "not run"}`}`);
+    else setMsg(r.data?.error ?? `Not saved (HTTP ${r.status}).`);
+  }
+  return (
+    <form onSubmit={save}>
+      <label htmlFor="openai-key">Paste a new OpenAI key (sk-...)</label>
+      <div className="row">
+        <input id="openai-key" type="password" autoComplete="off" spellCheck={false} value={value} onChange={(e) => setValue(e.target.value)} />
+        <button type="submit" disabled={busy || !value.trim()}>Save key</button>
+      </div>
+      {msg ? <p className="muted">{msg} <a href="/settings">Refresh</a></p> : null}
+    </form>
+  );
+}
+
 export function CheckButton() {
   const [msg, setMsg] = useState<string | null>(null);
   async function run() {
-    const r = await postJson<KeyResp & { googleCheck?: { ok: boolean; message: string | null } | null }>("/api/settings/check", {});
+    const r = await postJson<KeyResp & { googleCheck?: { ok: boolean; message: string | null } | null; openaiCheck?: { ok: boolean; message: string | null } | null }>("/api/settings/check", {});
     const x = r.data?.check ? (r.data.check.ok ? "xAI key check passed." : `xAI: ${r.data.check.message}`) : (r.data?.error ?? `HTTP ${r.status}`);
     const g = r.data?.googleCheck ? (r.data.googleCheck.ok ? " Google key check passed." : ` Google: ${r.data.googleCheck.message}`) : "";
-    setMsg(x + g);
+    const o = r.data?.openaiCheck ? (r.data.openaiCheck.ok ? " OpenAI key check passed." : ` OpenAI: ${r.data.openaiCheck.message}`) : "";
+    setMsg(x + g + o);
   }
-  return <div className="row"><button className="secondary" onClick={run}>Check both keys again</button>{msg ? <span>{msg}</span> : null}</div>;
+  return <div className="row"><button className="secondary" onClick={run}>Check keys again</button>{msg ? <span>{msg}</span> : null}</div>;
 }
 
 export function CapForm(props: { capUsd: number }) {
@@ -76,7 +103,7 @@ export function CapForm(props: { capUsd: number }) {
   }
   return (
     <form onSubmit={save} className="row">
-      <label htmlFor="cap">Monthly cap (USD, shared across xAI and Google)</label>
+      <label htmlFor="cap">Monthly cap (USD, shared across all providers)</label>
       <input id="cap" type="number" min="0" step="0.01" value={v} onChange={(e) => setV(e.target.value)} style={{ maxWidth: "8rem" }} />
       <button type="submit">Set cap</button>
       {msg ? <span>{msg}</span> : null}

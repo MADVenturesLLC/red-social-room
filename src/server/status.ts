@@ -9,6 +9,8 @@ import { qualityFor, resolutionFor } from "./config.ts";
 import { CREATORS } from "./runs.ts";
 import { CAPABILITIES as XAI_CAPS } from "./xai/adapter.ts";
 import { CAPABILITIES as GOOGLE_CAPS } from "./google/adapter.ts";
+import { CAPABILITIES as OPENAI_CAPS } from "./openai/adapter.ts";
+import { openaiDepsOf } from "./execute.ts";
 import type { AppDeps } from "./generate.ts";
 import type { KeyStatus } from "./keys.ts";
 import type { DB } from "./db.ts";
@@ -38,6 +40,7 @@ export interface CreatorStatus {
 export interface AppStatus {
   key: KeyStatus & { checked: boolean; checkOk: boolean; versionListing: string | null; checkMessage: string | null };
   googleKey: KeyStatus & { checked: boolean; checkOk: boolean; versionListing: string | null; checkMessage: string | null };
+  openaiKey: KeyStatus & { checked: boolean; checkOk: boolean; versionListing: string | null; checkMessage: string | null };
   creator: CreatorStatus;
   creators: CreatorStatus[];
   totals: MonthTotals;
@@ -46,8 +49,9 @@ export interface AppStatus {
 }
 
 function cardOf(d: AppDeps, def: (typeof CREATORS)[number], totals: MonthTotals): CreatorStatus {
-  const keyStore = def.provider === "google" ? d.googleKeys : d.keys;
-  const keyCheck: KeyCheckCache = def.provider === "google" ? d.googleKeyCheck : d.keyCheck;
+  const oa = def.provider === "openai" ? openaiDepsOf(d) : null;
+  const keyStore = def.provider === "google" ? d.googleKeys : def.provider === "openai" ? oa!.keys : d.keys;
+  const keyCheck: KeyCheckCache = def.provider === "google" ? d.googleKeyCheck : def.provider === "openai" ? oa!.keyCheck : d.keyCheck;
   const key = keyStore.status();
   const fp = keyStore.fingerprint();
   const checked = fp !== null && keyCheck.fingerprint === fp;
@@ -58,7 +62,7 @@ function cardOf(d: AppDeps, def: (typeof CREATORS)[number], totals: MonthTotals)
     const eq = def.provider === "xai" ? qualityFor(d.switches, "edit").priceQuality : null;
     editEstimateMicros = estimate(d.db, d.prices, { provider: def.provider, model: def.model, kind: "edit", resolution: resolutionFor(d.switches), quality: eq }).micros;
   } catch { editEstimateMicros = null; }
-  const caps = def.provider === "xai" ? XAI_CAPS : GOOGLE_CAPS;
+  const caps = def.provider === "xai" ? XAI_CAPS : def.provider === "openai" ? OPENAI_CAPS : GOOGLE_CAPS;
   let state: CreatorStatus["state"] = "ready", stateText = "Ready";
   if (!key.set) { state = "no_key"; stateText = "No key — add it in Settings"; }
   else if (totals.countedMicros + est.micros > totals.capMicros) { state = "cap_reached"; stateText = "Cap reached"; }
@@ -82,7 +86,7 @@ const FIVEXX_WINDOW_MS = 10 * 60 * 1000;
 /** F5 (item 15): after 3 consecutive 5xx results for one provider within 10 minutes, the card shows
  *  "Provider having problems" until the next success. Read from the ledger: the newest rows walk back
  *  through consecutive 5xx http_status values; a later success breaks the streak. */
-export function providerProblems(db: DB, provider: "xai" | "google"): boolean {
+export function providerProblems(db: DB, provider: "xai" | "google" | "openai"): boolean {
   const rows = db.prepare("SELECT http_status AS s, created_at AS t FROM spend_ledger WHERE provider = ? ORDER BY created_at DESC, rowid DESC LIMIT 8").all(provider) as unknown as Array<{ s: number | null; t: string }>;
   let n = 0, newest = 0, oldest = 0;
   for (const r of rows) {
@@ -101,9 +105,11 @@ export function appStatus(d: AppDeps): AppStatus {
   const creators = CREATORS.map((def) => cardOf(d, def, totals));
   const xai = creators.find((c) => c.id === "xai") ?? creators[0];
   const goog = creators.find((c) => c.id === "google") ?? creators[1];
+  const oai = creators.find((c) => c.id === "openai") ?? creators[0];
   return {
     key: { set: xai.keySet, source: xai.keySource, last4: xai.keyLast4, checked: xai.checked, checkOk: xai.checkOk, versionListing: xai.versionListing, checkMessage: xai.checkMessage },
     googleKey: { set: goog.keySet, source: goog.keySource, last4: goog.keyLast4, checked: goog.checked, checkOk: goog.checkOk, versionListing: goog.versionListing, checkMessage: goog.checkMessage },
+    openaiKey: { set: oai.keySet, source: oai.keySource, last4: oai.keyLast4, checked: oai.checked, checkOk: oai.checkOk, versionListing: oai.versionListing, checkMessage: oai.checkMessage },
     creator: xai,
     creators,
     totals,

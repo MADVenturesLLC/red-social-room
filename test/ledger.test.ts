@@ -129,7 +129,7 @@ test("F20: a $0.10 cap blocks the next call before anything is written; the refu
   settle(db, b.id, { actualMicros: 40000, costSource: "billed_provider", httpStatus: 200, outcome: "ok" });
   assert.throws(() => reserve(db, { ...base, estimateMicros: 40000, now: OCT }), (e: unknown) => {
     assert.ok(e instanceof CapRefused);
-    assert.equal(e.message, "Monthly cap $0.10 reached ($0.08 counted across xAI and Google). Raise the cap in Settings or wait until Nov 1, 12:00 AM ET.");
+    assert.equal(e.message, "Monthly cap $0.10 reached ($0.08 counted this month). Raise the cap in Settings or wait until Nov 1, 12:00 AM ET.");
     return true;
   });
   assert.equal(Number((db.prepare("SELECT COUNT(*) AS n FROM spend_ledger").get() as { n: number }).n), 2);
@@ -141,7 +141,7 @@ test("F20: an unresolved row counts toward the cap at its full reservation, and 
   setCapUsd(db, 0.10);
   const a = reserve(db, { ...base, estimateMicros: 70000, now: OCT });
   markUnresolved(db, a.id, { reason: "timeout", httpStatus: null, outcome: "timeout" });
-  assert.throws(() => reserve(db, { ...base, estimateMicros: 40000, now: OCT }), /\$0\.07 counted across xAI and Google, including \$0\.07 held for unchecked calls/);
+  assert.throws(() => reserve(db, { ...base, estimateMicros: 40000, now: OCT }), /\$0\.07 counted this month, including \$0\.07 held for unchecked calls/);
 });
 
 test("F20: a call that lands exactly on the cap is allowed; one micro-dollar over is refused", () => {
@@ -183,7 +183,7 @@ test("item 17 (Argus M3): a full October does not block November, and November c
   const nov = reserve(db, { ...base, estimateMicros: 40000, now: new Date("2026-11-01T04:00:00Z") });
   assert.equal((db.prepare("SELECT month_ny FROM spend_ledger WHERE id = ?").get(nov.id) as { month_ny: string }).month_ny, "2026-11");
   // November now holds $0.04 of its own; the next $0.04 passes the $0.05 cap and is refused, naming only November's $0.04.
-  assert.throws(() => reserve(db, { ...base, estimateMicros: 40000, now: new Date("2026-11-15T12:00:00Z") }), /\(\$0\.04 counted across xAI and Google, including \$0\.04 held/);
+  assert.throws(() => reserve(db, { ...base, estimateMicros: 40000, now: new Date("2026-11-15T12:00:00Z") }), /\(\$0\.04 counted this month, including \$0\.04 held/);
   const novT = monthTotals(db, "2026-11"), octT = monthTotals(db, "2026-10");
   assert.equal(novT.countedMicros, 40000);
   assert.equal(octT.countedMicros, 40000);

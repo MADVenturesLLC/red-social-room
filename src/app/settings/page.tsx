@@ -5,7 +5,7 @@ import { freeBytes } from "../../server/store.ts";
 import { backupSummary } from "../../server/backup.ts";
 import { r2Status } from "../../server/r2config.ts";
 import { maintenanceRows } from "../../server/fts.ts";
-import { KeyForm, GoogleKeyForm, CheckButton, CapForm, ReconcileRow, ConsoleForm, R2Form, BackupNowButton, FtsTools } from "../../components/SettingsClient.tsx";
+import { KeyForm, GoogleKeyForm, OpenAiKeyForm, CheckButton, CapForm, ReconcileRow, ConsoleForm, R2Form, BackupNowButton, FtsTools } from "../../components/SettingsClient.tsx";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +48,15 @@ export default function SettingsPage() {
         </p>
         <p className="muted">Stays on the server; only the last 4 characters appear here. Google returns no billed amount, so the app estimates each call from the token counts it reports; the Google console check below shows the difference.</p>
         <GoogleKeyForm />
+      </section>
+      <section className="card">
+        <h2>OpenAI (ChatGPT) key</h2>
+        <p data-testid="openai-key-status">
+          {s.openaiKey.set ? <>Set ({s.openaiKey.source === "settings" ? "saved here" : "from .env"}), ending <code>{s.openaiKey.last4 ?? "????"}</code>.</> : "Not set."}{" "}
+          {s.openaiKey.checked ? (s.openaiKey.checkOk ? `Key check passed${s.openaiKey.versionListing ? ` (${s.openaiKey.versionListing})` : ""}.` : (s.openaiKey.checkMessage ?? "Key check failed.")) : "Not checked yet."}
+        </p>
+        <p className="muted">Stays on the server; only the last 4 characters appear here. Powers the ChatGPT (GPT Image) creator card for generating and editing images.</p>
+        <OpenAiKeyForm />
       </section>
       <section className="card">
         <h2>Spend ({s.totals.monthNY}, America/New_York month)</h2>

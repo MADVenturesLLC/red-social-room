@@ -25,6 +25,12 @@
       "read_on": "2026-10-10" },
     { "provider": "google", "model": "gemini-3.1-flash-lite", "kind": "prompt_optimize", "resolution": "text", "quality": null, "usd": 0.005,
       "source": "B2: Gemini 3.1 Flash-Lite paid tier, $0.25 input / $1.50 output per 1M tokens. The reservation covers prompt optimization with headroom; the app always settles from API usage tokens (item 8)",
-      "read_on": "2026-10-18" }
+      "read_on": "2026-10-18" },
+    { "provider": "openai", "model": "gpt-image-1", "kind": "generate", "resolution": "1k", "quality": null, "usd": 0.05,
+      "source": "OpenAI GPT Image (gpt-image-1) medium quality (~$0.042-$0.053 per 1K image; RESEARCH-models.md:74)",
+      "read_on": "2026-10-24" },
+    { "provider": "openai", "model": "gpt-image-1", "kind": "edit", "resolution": "1k", "quality": null, "usd": 0.06,
+      "source": "OpenAI GPT Image (gpt-image-1) medium quality edit (input image tokens + output image tokens; RESEARCH-models.md:73-74)",
+      "read_on": "2026-10-24" }
   ]
 }
