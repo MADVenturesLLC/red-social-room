@@ -141,6 +141,15 @@ B2 (Amendment 1 section 4, Oct 13/18 revisions) adds **Optimize prompt** directl
 - **Cost & ledger guard**: reserved before sending under kind `prompt_optimize` against the shared monthly cap ($0.005 reservation, settles from API usage tokens at ~$0.0003 per call).
 - **Safety**: the real-person check runs before sending, and runs again at Generate on the final prompt. No image provider is called during optimization.
 
+### B1: Who's using it
+
+B1 (Amendment 1, Oct 10 revision) makes the app say who is using it and keeps spend with the people allowed to spend:
+
+- **Identity from the door, not a new login**: the signed-in person is read from Cloudflare Access (`Cf-Access-Authenticated-User-Email`). Access blocks outsiders from setting that header, so no password or account system was added. A request with no header comes from the box or the tailnet and counts as the owner.
+- **The allowlist lives in `config/users.json`**: Michael (Founder) and Stephanie, the two accounts in use, both may make paid calls. Any other account that ever signs in is **view-only**.
+- **View-only is enforced on the server**: `/api/run`, `/api/edit`, `/api/generate`, `/api/captions`, `/api/optimize` and the widen call answer `403` before any work, so no provider request and no ledger row. The UI also disables Generate/Edit/Optimize and shows a plain note; view-only accounts can still upload a picture, save it as a post, design, caption-free export, and browse the Library.
+- **Who saved what**: the header shows "Signed in as Michael (Founder)" (or "View only — <email>"), and every library save records the name in `posts.created_by`, shown on the Library card.
+
 ### Run it locally (no Docker)
 
 ```

@@ -10,9 +10,9 @@ export class LibraryError extends Error {
   constructor(message: string) { super(message); this.name = "LibraryError"; }
 }
 
-export interface PostRow { id: number; created_at: string; generation_id: string; asset_id: string; prompt: string; model: string; notes: string; width: number | null; height: number | null; designed: number }
+export interface PostRow { id: number; created_at: string; generation_id: string; asset_id: string; prompt: string; model: string; notes: string; created_by: string | null; width: number | null; height: number | null; designed: number }
 
-export function savePost(db: DB, generationId: unknown, notes: unknown = ""): { id: number; already: boolean } {
+export function savePost(db: DB, generationId: unknown, notes: unknown = "", createdBy: string | null = null): { id: number; already: boolean } {
   if (typeof generationId !== "string" || !/^[0-9a-f-]{36}$/.test(generationId)) throw new LibraryError("Unknown image.");
   const n = typeof notes === "string" ? notes.trim() : "";
   if (n.length > 2000) throw new LibraryError("Notes are limited to 2,000 characters.");
@@ -21,12 +21,12 @@ export function savePost(db: DB, generationId: unknown, notes: unknown = ""): { 
   if (g.status !== "ok" || !g.display_asset_id) throw new LibraryError("Only a finished image can be saved.");
   const existing = db.prepare("SELECT id FROM posts WHERE generation_id = ?").get(generationId) as { id: number } | undefined;
   if (existing) return { id: Number(existing.id), already: true };
-  const r = db.prepare("INSERT INTO posts (created_at, generation_id, asset_id, prompt, model, notes) VALUES (?, ?, ?, ?, ?, ?)").run(isoNY(), g.id, g.display_asset_id, g.prompt, g.model, n);
+  const r = db.prepare("INSERT INTO posts (created_at, generation_id, asset_id, prompt, model, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").run(isoNY(), g.id, g.display_asset_id, g.prompt, g.model, n, createdBy);
   return { id: Number(r.lastInsertRowid), already: false };
 }
 
 /** Direct save for an uploaded image: creates post directly without AI model alteration (zero spend). */
-export function saveUploadedPost(db: DB, input: { assetId: unknown; prompt?: unknown; notes?: unknown }): { id: number; already: boolean } {
+export function saveUploadedPost(db: DB, input: { assetId: unknown; prompt?: unknown; notes?: unknown }, createdBy: string | null = null): { id: number; already: boolean } {
   const assetId = typeof input.assetId === "string" ? input.assetId.trim() : "";
   if (!/^[a-f0-9]{64}$/.test(assetId)) throw new LibraryError("Unknown image.");
   const a = db.prepare("SELECT id, mime FROM assets WHERE id = ?").get(assetId) as { id: string; mime: string } | undefined;
@@ -47,7 +47,7 @@ export function saveUploadedPost(db: DB, input: { assetId: unknown; prompt?: unk
     db.prepare("INSERT INTO runs (id, created_at, prompt, status) VALUES (?, ?, ?, 'ok')").run(runId, now, prompt);
     db.prepare(`INSERT INTO generations (id, run_id, created_at, provider, model, kind, prompt, params, status, output_asset_id, display_asset_id)
       VALUES (?, ?, ?, 'upload', 'upload', 'generate', ?, '{}', 'ok', ?, ?)`).run(genId, runId, now, prompt, assetId, assetId);
-    const r = db.prepare("INSERT INTO posts (created_at, generation_id, asset_id, prompt, model, notes, source_asset_id) VALUES (?, ?, ?, ?, 'upload', ?, ?)").run(now, genId, assetId, prompt, n, assetId);
+    const r = db.prepare("INSERT INTO posts (created_at, generation_id, asset_id, prompt, model, notes, source_asset_id, created_by) VALUES (?, ?, ?, ?, 'upload', ?, ?, ?)").run(now, genId, assetId, prompt, n, assetId, createdBy);
     return { id: Number(r.lastInsertRowid), already: false };
   });
 }
@@ -68,7 +68,7 @@ export function searchPosts(db: DB, q: unknown, tag: unknown = null, limit = 60)
   const text = typeof q === "string" ? q.slice(0, 200) : "";
   const tagName = typeof tag === "string" ? tag.slice(0, 80) : "";
   const fq = ftsQuery(text);
-  const cols = "p.id, p.created_at, p.generation_id, p.asset_id, p.prompt, p.model, p.notes, a.width, a.height, (p.recipe IS NOT NULL) AS designed";
+  const cols = "p.id, p.created_at, p.generation_id, p.asset_id, p.prompt, p.model, p.notes, p.created_by, a.width, a.height, (p.recipe IS NOT NULL) AS designed";
   const byTag = "p.id IN (SELECT pt.post_id FROM post_tags pt JOIN tags t ON t.id = pt.tag_id WHERE t.name = ?)";
   if (!fq) {
     if (tagName) return db.prepare(`SELECT ${cols} FROM posts p JOIN assets a ON a.id = p.asset_id WHERE ${byTag} ORDER BY p.id DESC LIMIT ?`).all(tagName, limit) as unknown as PostRow[];

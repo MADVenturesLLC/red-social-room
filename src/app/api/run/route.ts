@@ -3,6 +3,7 @@
 // exists as `blocked`, every job shows the reason, nothing was sent (F10).
 import { getApp } from "../../../server/app.ts";
 import { startRun, runView, RunInputError } from "../../../server/runs.ts";
+import { actorFromRequest, spendDenied } from "../../../server/actor.ts";
 import { guardPost, json, readJson } from "../../../server/route-util.ts";
 import { notWritableResponse, DataDirNotWritable, NOT_WRITABLE_MESSAGE } from "../../../server/writable.ts";
 
@@ -10,6 +11,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request): Promise<Response> {
   const bad = guardPost(req); if (bad) return bad;
+  const viewOnly = spendDenied(actorFromRequest(req)); if (viewOnly) return viewOnly; // B1: view-only accounts make no paid call
   const body = await readJson(req, 512 * 1024);
   if (!body) return json({ error: "Expected a JSON object." }, 400);
   const app = getApp();

@@ -54,7 +54,7 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
             <a href={`/api/assets/${p.asset_id}`}><img src={`/api/assets/${p.asset_id}`} alt={p.prompt} loading="lazy" width={p.width ?? undefined} height={p.height ?? undefined} /></a>
             <figcaption className="muted">
               {p.prompt}{p.notes ? ` — ${p.notes}` : ""}<br />
-              {p.model} · {p.created_at.slice(0, 10)}
+              {p.model} · {p.created_at.slice(0, 10)}{p.created_by ? ` · by ${p.created_by}` : ""}
               {tagsOf.get(p.id)?.length ? <> · {tagsOf.get(p.id)!.map((t) => <span key={t} className="tag">{t}</span>)}</> : null}
               <br />
               <a href={`/design/${p.id}`}>{p.designed ? "Edit design" : "Design"}</a> · <a href={`/captions/${p.id}`}>Captions</a> · <a href={`/export/${p.id}`}>Export</a> · <a href={`/?reuse=${p.id}`}>Reuse</a>
