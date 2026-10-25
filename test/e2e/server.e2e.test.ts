@@ -1118,3 +1118,36 @@ test("no response body or header, and no built browser file, contains any key (f
   assert.ok(staticFiles.length > 5);
   assert.deepEqual(hits, []);
 });
+
+test("C1: installable and shareable — manifest, icons, service worker, and the Share control on Export", async () => {
+  const man = await fetch(`${base}/manifest.webmanifest`);
+  assert.equal(man.status, 200);
+  const m = (await man.json()) as { name: string; start_url: string; icons: Array<{ src: string; sizes: string; purpose?: string }> };
+  assert.equal(m.name, "Red Social Room");
+  assert.equal(m.start_url, "/");
+  assert.ok(m.icons.some((i) => i.sizes === "512x512" && i.purpose === "maskable"), "a maskable icon is listed");
+
+  const sw = await fetch(`${base}/sw.js`);
+  assert.equal(sw.status, 200);
+  assert.match(await sw.text(), /addEventListener\("fetch"/);
+
+  for (const icon of ["/icons/icon-192.png", "/icons/icon-512.png", "/icons/apple-touch-icon.png"]) {
+    const res = await fetch(base + icon);
+    assert.equal(res.status, 200, icon);
+    assert.equal(res.headers.get("content-type"), "image/png", icon);
+    assert.ok((await res.arrayBuffer()).byteLength > 1000, `${icon} has bytes`);
+  }
+
+  const home = await (await fetch(`${base}/`)).text();
+  assert.match(home, /rel="manifest" href="\/manifest\.webmanifest"/);
+  assert.match(home, /apple-touch-icon/);
+
+  // A post's Export page carries the Share control once a rendition exists.
+  const g = JSON.parse(await record("POST /api/generate (C1)", await post("/api/generate", { prompt: "C1 share target: red kite over the bay", ratio: "4:5" }))) as { generationId: string };
+  const saved = JSON.parse(await record("POST /api/library (C1)", await post("/api/library", { generationId: g.generationId }))) as { id: number };
+  const rend = await record("POST /api/renditions (C1)", await post("/api/renditions", { postId: saved.id, presetId: "instagram-portrait" }));
+  assert.ok(!/"error"/.test(rend), rend);
+  const exp = await (await fetch(`${base}/export/${saved.id}`)).text();
+  assert.match(exp, /data-share="instagram-portrait"/);
+  assert.match(exp, />Share…</);
+});

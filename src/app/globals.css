@@ -12,6 +12,8 @@ textarea { width: 100%; min-height: 6rem; padding: .5rem; }
 input[type=text], input[type=password], input[type=search], input[type=number] { padding: .45rem; width: 100%; max-width: 30rem; }
 button { padding: .5rem 1rem; border-radius: 6px; border: 1px solid var(--bg2); background: var(--red); color: #fff; cursor: pointer; }
 button[disabled] { opacity: .5; cursor: default; }
+button.linkish { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
+button.linkish[disabled] { opacity: .5; }
 button.secondary { background: transparent; color: inherit; }
 .row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .5rem 0; }
 .card { border: 1px solid var(--bg2); border-radius: 8px; padding: .75rem; margin: .75rem 0; }
