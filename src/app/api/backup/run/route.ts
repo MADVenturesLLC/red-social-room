@@ -4,12 +4,14 @@ import { runBackup } from "../../../../server/backup.ts";
 import { loadR2Config } from "../../../../server/r2config.ts";
 import { r2Store } from "../../../../server/r2.ts";
 import { guardPost, json } from "../../../../server/route-util.ts";
+import { actorFromRequest, ownerDenied } from "../../../../server/actor.ts";
 import { notWritableResponse } from "../../../../server/writable.ts";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request): Promise<Response> {
   const bad = guardPost(req); if (bad) return bad;
+  const ownerOnly = ownerDenied(actorFromRequest(req)); if (ownerOnly) return ownerOnly; // B1: owner-only action
   const app = getApp();
   const ro = notWritableResponse(app.dataDir); if (ro) return ro; // pin 19 (d)
   const cfg = loadR2Config(app.db, app.dataDir);

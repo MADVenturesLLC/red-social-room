@@ -77,8 +77,10 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
   // B1: who is using the app (the server reads the Cloudflare Access header). Until the answer arrives the
   // controls stay as they were; the server refuses a view-only call regardless of the UI.
   const [me, setMe] = useState<WhoAmI | null>(null);
-  useEffect(() => { void fetchWhoAmI().then(setMe); }, []);
-  const spendBlocked = me !== null && !me.canSpend;
+  const [meChecked, setMeChecked] = useState(false);
+  useEffect(() => { void fetchWhoAmI().then((v) => { setMe(v); setMeChecked(true); }); }, []);
+  // Fail closed: if the identity cannot be confirmed (whoami failed), the spend controls stay off.
+  const spendBlocked = meChecked && (me === null || !me.canSpend);
   const refCapable = props.creators.some((c) => c.maxReferenceImages > 0);
 
   function stopWatch() {
@@ -349,7 +351,7 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
       ) : null}
 
       <label htmlFor="prompt">Prompt</label>
-      {spendBlocked ? <p className="warn" data-testid="view-only-note">View-only account ({me?.name}) — model calls are off. You can still upload a picture, save it as a post, design it and export it.</p> : null}
+      {spendBlocked ? <p className="warn" data-testid="view-only-note">{me === null ? "Couldn't confirm who's signed in — model calls are off until this page reloads." : `View-only account (${me.name}) — model calls are off.`} You can still upload a picture, save it as a post, design it and export it.</p> : null}
       <textarea id="prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={64000} />
       <div className="row" data-prompt-actions>
         <button type="button" className="secondary" onClick={() => void saveSnippet()} disabled={!prompt.trim()}>Save as snippet</button>

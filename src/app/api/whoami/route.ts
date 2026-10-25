@@ -13,6 +13,7 @@ export async function GET(req: Request): Promise<Response> {
     role: actor.role,
     email: actor.email,
     canSpend: actor.canSpend,
+    isOwner: actor.isOwner,
     via: actor.via,
   });
 }

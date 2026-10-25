@@ -8,6 +8,7 @@ import { checkGoogleKey } from "../../../../server/google/adapter.ts";
 import { checkOpenAiKey } from "../../../../server/openai/adapter.ts";
 import { googleDepsOf, openaiDepsOf } from "../../../../server/execute.ts";
 import { guardPost, json, readJson } from "../../../../server/route-util.ts";
+import { actorFromRequest, ownerDenied } from "../../../../server/actor.ts";
 import { notWritableResponse } from "../../../../server/writable.ts";
 import { join } from "node:path";
 
@@ -15,6 +16,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request): Promise<Response> {
   const bad = guardPost(req); if (bad) return bad;
+  const ownerOnly = ownerDenied(actorFromRequest(req)); if (ownerOnly) return ownerOnly; // B1: owner-only action
   const body = await readJson(req, 4096);
   if (!body) return json({ error: "Expected a JSON object." }, 400);
   const app = getApp();

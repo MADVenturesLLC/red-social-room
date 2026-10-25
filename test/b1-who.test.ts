@@ -7,23 +7,24 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { makeApp, fakeProviders } from "./helpers.ts";
 import { openDb } from "../src/server/db.ts";
+import { monthTotals } from "../src/server/ledger.ts";
 import { putImage } from "../src/server/store.ts";
 import { insertAsset } from "../src/server/execute.ts";
 import { saveUploadedPost, searchPosts } from "../src/server/library.ts";
 import { runView } from "../src/server/runs.ts";
-import { actorFromHeaders, spendDenied, loadUsers, ACCESS_EMAIL_HEADER, type UsersConfig, type Actor } from "../src/server/actor.ts";
+import { actorFromHeaders, spendDenied, ownerDenied, loadUsers, loadUsersFrom, UsersConfigError, ACCESS_EMAIL_HEADER, type UsersConfig, type Actor } from "../src/server/actor.ts";
 
 const CFG: UsersConfig = {
   users: [
-    { email: "djmikeyrawk1@gmail.com", name: "Michael", role: "Founder", canSpend: true },
-    { email: "scjimenez00@yahoo.com", name: "Stephanie", role: null, canSpend: true },
+    { email: "djmikeyrawk1@gmail.com", name: "Michael", role: "Founder", canSpend: true, isOwner: true },
+    { email: "scjimenez00@yahoo.com", name: "Stephanie", role: null, canSpend: true, isOwner: false },
   ],
   localOwnerEmail: "djmikeyrawk1@gmail.com",
 };
 
 const withHeader = (email: string | null) => (name: string) => (name === ACCESS_EMAIL_HEADER ? email : null);
 
-test("B1: the shipped config lists Michael (Founder) and Stephanie, both able to spend", () => {
+test("B1: the shipped config lists Michael (Founder, owner) and Stephanie, both able to spend", () => {
   const cfg = loadUsers();
   const michael = cfg.users.find((u) => u.email === "djmikeyrawk1@gmail.com");
   const stephanie = cfg.users.find((u) => u.email === "scjimenez00@yahoo.com");
@@ -31,11 +32,34 @@ test("B1: the shipped config lists Michael (Founder) and Stephanie, both able to
   assert.equal(michael!.name, "Michael");
   assert.equal(michael!.role, "Founder");
   assert.equal(michael!.canSpend, true);
+  assert.equal(michael!.isOwner, true, "Michael is the owner");
   assert.ok(stephanie, "Stephanie is in config/users.json");
   assert.equal(stephanie!.name, "Stephanie");
   assert.equal(stephanie!.role, null, "no invented title for Stephanie");
   assert.equal(stephanie!.canSpend, true);
+  assert.equal(stephanie!.isOwner, false, "Stephanie spends but does not administer");
   assert.equal(cfg.localOwnerEmail, "djmikeyrawk1@gmail.com");
+});
+
+test("B1: a broken allowlist is refused (startup validation calls this)", () => {
+  assert.throws(() => loadUsersFrom({}), UsersConfigError, "no users");
+  assert.throws(() => loadUsersFrom({ users: [] }), UsersConfigError, "empty list");
+  assert.throws(() => loadUsersFrom({ users: [{ email: "", name: "x" }] }), UsersConfigError, "missing email");
+  assert.throws(() => loadUsersFrom({ users: [{ email: "a@b.c" }] }), UsersConfigError, "missing name");
+  assert.throws(() => loadUsersFrom({ users: [{ email: "a@b.c", name: "A", canSpend: true }] }), UsersConfigError, "no owner");
+  assert.throws(() => loadUsersFrom({ users: [{ email: "a@b.c", name: "A", isOwner: true }], localOwnerEmail: "x@y.z" }), UsersConfigError, "owner email not in the list");
+});
+
+test("B1: ownerDenied stops non-owners; the owner passes", async () => {
+  const owner = actorFromHeaders(withHeader("djmikeyrawk1@gmail.com"), CFG);
+  assert.equal(ownerDenied(owner), null);
+  for (const email of ["scjimenez00@yahoo.com", "someone@example.com"]) {
+    const denied = ownerDenied(actorFromHeaders(withHeader(email), CFG));
+    assert.ok(denied, `${email} gets a response`);
+    assert.equal(denied!.status, 403);
+    const body = (await denied!.json()) as { error: string };
+    assert.match(body.error, /can't change settings/i);
+  }
 });
 
 test("B1: the Access header maps to the person; case and spaces do not matter", () => {
@@ -189,8 +213,8 @@ test("B1: /api/whoami answers the signed-in person from the Access header", asyn
       headers: { host: "localhost:3000", ...(email ? { [ACCESS_EMAIL_HEADER]: email } : {}) },
     }));
 
-    const stephanie = (await (await call("scjimenez00@yahoo.com")).json()) as { name: string; role: string | null; canSpend: boolean; via: string };
-    assert.deepEqual(stephanie, { name: "Stephanie", role: null, email: "scjimenez00@yahoo.com", canSpend: true, via: "access" });
+    const stephanie = (await (await call("scjimenez00@yahoo.com")).json()) as { name: string; role: string | null; canSpend: boolean; isOwner: boolean; via: string };
+    assert.deepEqual(stephanie, { name: "Stephanie", role: null, email: "scjimenez00@yahoo.com", canSpend: true, isOwner: false, via: "access" });
 
     const owner = (await (await call()).json()) as { name: string; canSpend: boolean; via: string };
     assert.equal(owner.name, "Michael");
@@ -201,6 +225,62 @@ test("B1: /api/whoami answers the signed-in person from the Access header", asyn
     assert.equal(stranger.name, "someone@example.com");
     assert.equal(stranger.canSpend, false);
     assert.equal(stranger.via, "unknown");
+  } finally {
+    delete g.__rsrApp;
+    t.cleanup();
+  }
+});
+
+test("B1: owner-only routes refuse Stephanie and unknown accounts, and the owner's change lands", async () => {
+  const p = fakeProviders();
+  const t = makeApp({ fetch: p.fetch });
+  const g = globalThis as typeof globalThis & { __rsrApp?: unknown };
+  g.__rsrApp = t.app;
+  const call = (path: string, email?: string, body: unknown = {}) => new Request(`http://localhost:3000${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-rsr": "1",
+      host: "localhost:3000",
+      ...(email ? { [ACCESS_EMAIL_HEADER]: email } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  try {
+    const { POST: capRoute } = await import("../src/app/api/settings/cap/route.ts");
+    const { POST: keyRoute } = await import("../src/app/api/settings/key/route.ts");
+    const { POST: deleteRoute } = await import("../src/app/api/posts/delete/route.ts");
+    const { POST: backupRoute } = await import("../src/app/api/backup/run/route.ts");
+    const { POST: ftsRoute } = await import("../src/app/api/maintenance/fts/route.ts");
+
+    // Stephanie may spend, but the cap, keys, deletions and backups are the owner's.
+    for (const [name, route, body] of [
+      ["settings/cap", capRoute, { usd: 250 }],
+      ["settings/key", keyRoute, { key: "sk-" + "x".repeat(40) }],
+      ["posts/delete", deleteRoute, { id: 1 }],
+      ["backup/run", backupRoute, {}],
+      ["maintenance/fts", ftsRoute, { action: "check" }],
+    ] as const) {
+      const denied = await route(call(`/api/${name}`, "scjimenez00@yahoo.com", body));
+      assert.equal(denied.status, 403, `${name} refuses Stephanie`);
+      assert.match(((await denied.json()) as { error: string }).error, /can't change settings/i);
+    }
+    assert.equal(monthTotals(t.app.db).capMicros, 50_000_000, "Stephanie's refusal did not change the cap");
+
+    // The owner's own change goes through.
+    const allowed = await capRoute(call("/api/settings/cap", "djmikeyrawk1@gmail.com", { usd: 250 }));
+    assert.equal(allowed.status, 200);
+    assert.equal(monthTotals(t.app.db).capMicros, 250_000_000);
+
+    // A view-only account is refused on the same routes.
+    for (const [name, route, body] of [
+      ["settings/cap", capRoute, { usd: 1 }],
+      ["posts/delete", deleteRoute, { id: 1 }],
+      ["backup/run", backupRoute, {}],
+    ] as const) {
+      const denied = await route(call(`/api/${name}`, "someone@example.com", body));
+      assert.equal(denied.status, 403, `${name} refuses the unknown account`);
+    }
   } finally {
     delete g.__rsrApp;
     t.cleanup();

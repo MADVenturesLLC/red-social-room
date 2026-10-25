@@ -4,12 +4,14 @@ import { getApp } from "../../../../server/app.ts";
 import { checkFts, rebuildFts, ftsCounts } from "../../../../server/fts.ts";
 import { isoNY } from "../../../../../spike/lib/ledger.ts";
 import { guardPost, json, readJson } from "../../../../server/route-util.ts";
+import { actorFromRequest, ownerDenied } from "../../../../server/actor.ts";
 import { notWritableResponse } from "../../../../server/writable.ts";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request): Promise<Response> {
   const bad = guardPost(req); if (bad) return bad;
+  const ownerOnly = ownerDenied(actorFromRequest(req)); if (ownerOnly) return ownerOnly; // B1: owner-only action
   const body = await readJson(req);
   if (!body) return json({ error: "Expected a JSON object." }, 400);
   const app = getApp();

@@ -3,7 +3,7 @@
 // the same answer drives the spend controls in CreateClient. No login of its own.
 import { useEffect, useState } from "react";
 
-export interface WhoAmI { name: string; role: string | null; email: string | null; canSpend: boolean; via: "access" | "local" | "unknown" }
+export interface WhoAmI { name: string; role: string | null; email: string | null; canSpend: boolean; isOwner: boolean; via: "access" | "local" | "unknown" }
 
 export async function fetchWhoAmI(): Promise<WhoAmI | null> {
   try {
