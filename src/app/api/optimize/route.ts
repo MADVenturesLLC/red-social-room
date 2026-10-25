@@ -4,6 +4,7 @@
 import { getApp } from "../../../server/app.ts";
 import { googleDepsOf } from "../../../server/execute.ts";
 import { optimizePrompt, OptimizeInputError } from "../../../server/optimize.ts";
+import { actorFromRequest, spendDenied } from "../../../server/actor.ts";
 import { guardPost, json, readJson } from "../../../server/route-util.ts";
 import { notWritableResponse } from "../../../server/writable.ts";
 
@@ -12,6 +13,7 @@ export const maxDuration = 300;
 
 export async function POST(req: Request): Promise<Response> {
   const bad = guardPost(req); if (bad) return bad;
+  const viewOnly = spendDenied(actorFromRequest(req)); if (viewOnly) return viewOnly; // B1: view-only accounts make no paid call
   const body = await readJson(req);
   if (!body) return json({ error: "Expected a JSON object." }, 400);
   const app = getApp();

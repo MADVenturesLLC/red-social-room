@@ -4,11 +4,13 @@ import { checkGoogleKey } from "../../../../server/google/adapter.ts";
 import { checkOpenAiKey } from "../../../../server/openai/adapter.ts";
 import { googleDepsOf, openaiDepsOf } from "../../../../server/execute.ts";
 import { guardPost, json } from "../../../../server/route-util.ts";
+import { actorFromRequest, ownerDenied } from "../../../../server/actor.ts";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request): Promise<Response> {
   const bad = guardPost(req); if (bad) return bad;
+  const ownerOnly = ownerDenied(actorFromRequest(req)); if (ownerOnly) return ownerOnly; // B1: owner-only action
   const app = getApp();
   const c = await checkKey(app, { force: true });
   const g = app.googleKeys.status().set ? await checkGoogleKey(googleDepsOf(app), { force: true }) : null;

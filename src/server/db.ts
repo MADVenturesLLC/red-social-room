@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS posts (
   prompt TEXT NOT NULL,
   model TEXT NOT NULL,
   notes TEXT NOT NULL DEFAULT '',
+  created_by TEXT,                                       -- B1: who saved it (the signed-in Cloudflare Access name)
   recipe TEXT,                                           -- A4: the editor recipe (JSON) saved beside the flattened render
   source_asset_id TEXT REFERENCES assets(id),            -- A4: the untouched original the recipe renders from
   caption_text TEXT NOT NULL DEFAULT '',                 -- A5: denormalized for the FTS index (captions table below)
@@ -312,6 +313,7 @@ export function openDb(path: string, opts: { spikeLedgerPath?: string | null; se
   migrateA3(db);
   migrateA4(db);
   migrateA5(db);
+  migrateB1(db);
   const spike = opts.spikeLedgerPath === undefined ? SPIKE_LEDGER_PATH : opts.spikeLedgerPath;
   importLedgerOnce(db, spike, opts.seeds ?? (spike ? LEDGER_SEEDS : []));
   return db;
@@ -377,6 +379,12 @@ function migrateA4(db: DB): void {
   const cols = new Set((db.prepare("PRAGMA table_info(posts)").all() as Array<{ name: string }>).map((c) => c.name));
   if (!cols.has("recipe")) db.exec("ALTER TABLE posts ADD COLUMN recipe TEXT");
   if (!cols.has("source_asset_id")) db.exec("ALTER TABLE posts ADD COLUMN source_asset_id TEXT REFERENCES assets(id)");
+}
+
+/** B1 "Who's using it": older databases get the posts column that records who saved a post. */
+function migrateB1(db: DB): void {
+  const cols = new Set((db.prepare("PRAGMA table_info(posts)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!cols.has("created_by")) db.exec("ALTER TABLE posts ADD COLUMN created_by TEXT");
 }
 
 /** A5: the posts columns the FTS index reads, and a rebuild of an older four-column index. The captions,

@@ -1,5 +1,6 @@
 import { getApp } from "../../../server/app.ts";
 import { savePost, saveUploadedPost, searchPosts, LibraryError } from "../../../server/library.ts";
+import { actorFromRequest } from "../../../server/actor.ts";
 import { guardPost, json, readJson } from "../../../server/route-util.ts";
 import { notWritableResponse } from "../../../server/writable.ts";
 
@@ -15,13 +16,14 @@ export async function POST(req: Request): Promise<Response> {
   const body = await readJson(req);
   if (!body) return json({ error: "Expected a JSON object." }, 400);
   const app = getApp();
+  const actor = actorFromRequest(req); // B1: every save records who did it
   const ro = notWritableResponse(app.dataDir); if (ro) return ro; // pin 19 (d) gap 2
   try {
     const b = body as Record<string, unknown>;
     if (typeof b.assetId === "string" && b.assetId) {
-      return json(saveUploadedPost(app.db, { assetId: b.assetId, prompt: b.prompt, notes: b.notes }));
+      return json(saveUploadedPost(app.db, { assetId: b.assetId, prompt: b.prompt, notes: b.notes }, actor.name));
     }
-    return json(savePost(app.db, b.generationId, b.notes));
+    return json(savePost(app.db, b.generationId, b.notes, actor.name));
   } catch (e) {
     if (e instanceof LibraryError) return json({ error: e.message }, 400);
     return json({ error: "Save failed inside the app." }, 500);

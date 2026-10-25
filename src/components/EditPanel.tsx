@@ -13,7 +13,7 @@ export interface EditSource { assetId: string; width: number | null; height: num
 
 const usd = (micros: number) => `$${(micros / 1e6).toFixed(2)}`;
 
-export default function EditPanel(props: { creators: CreatorStatus[]; ratios: readonly string[]; source: EditSource; initialMode: "edit" | "reference"; onClose: () => void }) {
+export default function EditPanel(props: { creators: CreatorStatus[]; ratios: readonly string[]; source: EditSource; initialMode: "edit" | "reference"; canSpend?: boolean; onClose: () => void }) {
   const [mode, setMode] = useState<"edit" | "reference">(props.initialMode);
   const [instruction, setInstruction] = useState("");
   const [model, setModel] = useState(() => {
@@ -155,7 +155,8 @@ export default function EditPanel(props: { creators: CreatorStatus[]; ratios: re
         )}
         <span className="muted">est. {usd(costMicros)}{mode === "edit" && compare ? " (compare runs both)" : ""} · same instruction goes to every model exactly as typed</span>
       </div>
-      <button onClick={() => void start()} disabled={busy || running || !instruction.trim()}>{busy || running ? "Working… (up to 2 min)" : mode === "edit" ? "Edit" : "Make the image"}</button>
+      {props.canSpend === false ? <p className="warn">View-only account — edits and reference runs are off.</p> : null}
+      <button onClick={() => void start()} disabled={busy || running || props.canSpend === false || !instruction.trim()}>{busy || running ? "Working… (up to 2 min)" : mode === "edit" ? "Edit" : "Make the image"}</button>
       {err ? <p className="error">{err}</p> : null}
       {run ? (
         <div className="grid" data-run={run.id} data-mode={run.mode} data-status={run.status}>

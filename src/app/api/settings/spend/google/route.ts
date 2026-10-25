@@ -3,11 +3,13 @@
 import { getApp } from "../../../../../server/app.ts";
 import { setGoogleConsoleTotal } from "../../../../../server/ledger.ts";
 import { guardPost, json, readJson } from "../../../../../server/route-util.ts";
+import { actorFromRequest, ownerDenied } from "../../../../../server/actor.ts";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request): Promise<Response> {
   const bad = guardPost(req); if (bad) return bad;
+  const ownerOnly = ownerDenied(actorFromRequest(req)); if (ownerOnly) return ownerOnly; // B1: owner-only action
   const body = await readJson(req, 4096);
   if (!body) return json({ error: "Expected a JSON object." }, 400);
   const b = body as { usd?: unknown };

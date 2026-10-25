@@ -3,6 +3,7 @@
 // A2: the Google store (secrets/gemini_api_key, GEMINI_API_KEY) and the run-queue startup sweep.
 import { join } from "node:path";
 import { dataDir, loadSwitches, REPO_ROOT } from "./config.ts";
+import { loadUsers, UsersConfigError } from "./actor.ts";
 import { openDb } from "./db.ts";
 import { markInterrupted } from "./ledger.ts";
 import { acquireDataDirLock, DataDirLocked, DataDirLockFailed, DataDirNotWritable, isNotWritable } from "./lock.ts";
@@ -35,6 +36,9 @@ type G = typeof globalThis & { __rsrApp?: AppDeps };
 export function getApp(): AppDeps {
   const g = globalThis as G;
   if (g.__rsrApp) return g.__rsrApp;
+  // B1 (review round): the allowlist is validated before the lock is taken or anything is served, so a
+  // missing or malformed config/users.json stops the server here instead of failing at request time.
+  loadUsers();
   const dir = dataDir();
   // Argus L1 on f63676e: one server per data directory, taken before the database is opened or swept.
   // A1 pin 19 (d), line 370: if it cannot be taken (busy, or the directory is not writable) the server refuses to start.
@@ -100,6 +104,11 @@ export function startApp(exit: (code: number) => void = (c) => process.exit(c)):
   try {
     return getApp();
   } catch (e) {
+    if (e instanceof UsersConfigError) {
+      console.error(`[rsr] refusing to start: ${e.message}`);
+      exit(1);
+      return null;
+    }
     if (!(e instanceof DataDirLocked || e instanceof DataDirNotWritable || e instanceof DataDirLockFailed)) throw e;
     console.error(`[rsr] refusing to start: ${e.message}`);
     exit(1);

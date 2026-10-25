@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { postJson } from "./post.ts";
 import EditPanel, { type EditSource } from "./EditPanel.tsx";
+import { fetchWhoAmI, type WhoAmI } from "./WhoAmIChip.tsx";
 import { precheckUpload, resizeDimensions } from "../lib/upload-rules.ts";
 import type { JobView, RunView } from "../server/runs.ts";
 import type { CreatorStatus } from "../server/status.ts";
@@ -73,6 +74,13 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
   const images = chosen.reduce((n, c) => n + (counts[c.id] ?? 1), 0);
   const estimateMicros = chosen.reduce((n, c) => n + c.estimateMicros * (counts[c.id] ?? 1), 0);
   const running = run !== null && run.status === "running";
+  // B1: who is using the app (the server reads the Cloudflare Access header). Until the answer arrives the
+  // controls stay as they were; the server refuses a view-only call regardless of the UI.
+  const [me, setMe] = useState<WhoAmI | null>(null);
+  const [meChecked, setMeChecked] = useState(false);
+  useEffect(() => { void fetchWhoAmI().then((v) => { setMe(v); setMeChecked(true); }); }, []);
+  // Fail closed: if the identity cannot be confirmed (whoami failed), the spend controls stay off.
+  const spendBlocked = meChecked && (me === null || !me.canSpend);
   const refCapable = props.creators.some((c) => c.maxReferenceImages > 0);
 
   function stopWatch() {
@@ -343,10 +351,11 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
       ) : null}
 
       <label htmlFor="prompt">Prompt</label>
+      {spendBlocked ? <p className="warn" data-testid="view-only-note">{me === null ? "Couldn't confirm who's signed in — model calls are off until this page reloads." : `View-only account (${me.name}) — model calls are off.`} You can still upload a picture, save it as a post, design it and export it.</p> : null}
       <textarea id="prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={64000} />
       <div className="row" data-prompt-actions>
         <button type="button" className="secondary" onClick={() => void saveSnippet()} disabled={!prompt.trim()}>Save as snippet</button>
-        <button type="button" className="secondary" onClick={() => void handleOptimize()} disabled={optimizing || running || !prompt.trim()}>
+        <button type="button" className="secondary" onClick={() => void handleOptimize()} disabled={optimizing || running || spendBlocked || !prompt.trim()}>
           {optimizing ? "Optimizing… (up to 15 s)" : "Optimize prompt"}
         </button>
         {undoPrompt !== null ? <button type="button" className="secondary" onClick={handleUndo}>Undo</button> : null}
@@ -375,7 +384,7 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
 
       {attachedAsset && !useAsReference ? (
         <div className="row">
-          <button onClick={() => void start()} disabled={busy || running || !prompt.trim() || chosen.length === 0}>
+          <button onClick={() => void start()} disabled={busy || running || spendBlocked || !prompt.trim() || chosen.length === 0}>
             {busy || running ? "Enhancing photo… (up to 2 min)" : "Generate with Attached Picture"}
           </button>
           <button type="button" className="secondary" onClick={() => void saveDirectPost(attachedAsset.assetId)} disabled={busy || running}>
@@ -383,11 +392,11 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
           </button>
         </div>
       ) : attachedAsset && useAsReference ? (
-        <button onClick={() => void start()} disabled={busy || running || !prompt.trim() || chosen.length === 0}>
+        <button onClick={() => void start()} disabled={busy || running || spendBlocked || !prompt.trim() || chosen.length === 0}>
           {busy || running ? "Making… (up to 2 min)" : "Generate with Reference"}
         </button>
       ) : (
-        <button onClick={() => void start()} disabled={busy || running || !prompt.trim() || chosen.length === 0}>
+        <button onClick={() => void start()} disabled={busy || running || spendBlocked || !prompt.trim() || chosen.length === 0}>
           {busy || running ? "Making… (up to 2 min)" : "Generate"}
         </button>
       )}
@@ -435,7 +444,7 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
       ) : null}
 
       {editSource ? (
-        <EditPanel key={`${editSource.assetId}-${editMode}`} creators={props.creators} ratios={props.ratios} source={editSource} initialMode={editMode} onClose={() => setEditSource(null)} />
+        <EditPanel key={`${editSource.assetId}-${editMode}`} creators={props.creators} ratios={props.ratios} source={editSource} initialMode={editMode} canSpend={!spendBlocked} onClose={() => setEditSource(null)} />
       ) : null}
     </div>
   );

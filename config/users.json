@@ -1,0 +1,7 @@
+{
+  "users": [
+    { "email": "djmikeyrawk1@gmail.com", "name": "Michael", "role": "Founder", "canSpend": true, "isOwner": true },
+    { "email": "scjimenez00@yahoo.com", "name": "Stephanie", "role": null, "canSpend": true }
+  ],
+  "localOwnerEmail": "djmikeyrawk1@gmail.com"
+}
