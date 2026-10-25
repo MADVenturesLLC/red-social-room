@@ -121,14 +121,6 @@ export async function checkOpenAiKey(d: OpenAiDeps, opts: { force?: boolean } = 
   const base = d.baseUrl ?? OPENAI_BASE_URL;
   const tms = d.keyCheckTimeoutMs ?? 10_000;
   const r = await performOpenAiHttp(d.fetch, `${base}/v1/models`, { method: "GET", headers: d.keys.authHeader() }, tms);
-  if (r.outcome === "ok" && r.status === 200) {
-    const listing = MODEL;
-    d.keyCheck.fingerprint = fp;
-    d.keyCheck.ok = true;
-    d.keyCheck.versionListing = listing;
-    d.keyCheck.message = null;
-    return { ok: true, versionListing: listing };
-  }
   const s = r.status;
   const detail = providerDetail(r, d.keys);
   const fail = (code: ErrorCode, message: string) => {
@@ -138,6 +130,22 @@ export async function checkOpenAiKey(d: OpenAiDeps, opts: { force?: boolean } = 
     d.keyCheck.message = message;
     return { ok: false as const, code, message };
   };
+  if (r.outcome === "ok" && r.status === 200) {
+    // B3 (Copilot review round 1): a 200 from /v1/models only proves the key authenticates. Verify the
+    // account can actually see the image model before caching a green check, or the first paid call fails.
+    const j = r.json as { data?: Array<{ id?: unknown }> } | null;
+    const ids = Array.isArray(j?.data) ? j.data.map((m) => (m && typeof m.id === "string" ? m.id : "")).filter(Boolean) : null;
+    if (ids === null) return fail("unavailable", "OpenAI answered the key check but its model list could not be read. Try again.");
+    if (!ids.includes(MODEL)) {
+      return fail("unavailable", `This OpenAI key works, but it cannot see ${MODEL}. Enable GPT Image access for this project, or use a key that has it.`);
+    }
+    const listing = MODEL;
+    d.keyCheck.fingerprint = fp;
+    d.keyCheck.ok = true;
+    d.keyCheck.versionListing = listing;
+    d.keyCheck.message = null;
+    return { ok: true, versionListing: listing };
+  }
   if (s === 401 || s === 403) return fail("auth", `Key rejected (HTTP ${s}). Check the OpenAI key in Settings.`);
   if (s === 429) return fail("rate_limit", `OpenAI key check rate-limited (HTTP 429). Try again shortly.`);
   if (r.outcome === "timeout") return fail("timeout", "OpenAI key check timed out.");

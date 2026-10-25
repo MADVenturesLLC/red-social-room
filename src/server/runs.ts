@@ -102,7 +102,10 @@ export function startRun(d: AppDeps, input: { prompt: unknown; ratio: unknown; c
   const jobKind: "generate" | "edit" = sourceAssetId ? "edit" : "generate";
   const jobRatio = sourceAssetId ? "source" : ratio;
   if (parentId && !d.db.prepare("SELECT 1 FROM assets WHERE id = ?").get(parentId)) {
-    throw new RunInputError("That reference image is not in the store. Upload it first.");
+    // B3 (Copilot review round 1): name the asset the caller actually sent; both paths share this check.
+    throw new RunInputError(sourceAssetId
+      ? "That attached picture is not in the store. Upload it again."
+      : "That reference image is not in the store. Upload it first.");
   }
   checkWritable(d.dataDir);
   const pc = checkPrompt(prompt, d.promptMethod, d.switches.promptCheck, d.db);

@@ -103,7 +103,7 @@ export function CapForm(props: { capUsd: number }) {
   }
   return (
     <form onSubmit={save} className="row">
-      <label htmlFor="cap">Monthly cap (USD, shared across xAI and Google)</label>
+      <label htmlFor="cap">Monthly cap (USD, shared across all providers)</label>
       <input id="cap" type="number" min="0" step="0.01" value={v} onChange={(e) => setV(e.target.value)} style={{ maxWidth: "8rem" }} />
       <button type="submit">Set cap</button>
       {msg ? <span>{msg}</span> : null}

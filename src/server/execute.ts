@@ -137,7 +137,10 @@ export async function executeGeneration(d: AppDeps, input: GenExecInput): Promis
     const original = putImage(d.imagesDir, out.image);
     let display = original;
     let note: string | null = providerNote;
-    if ((input.provider === "xai" || input.provider === "openai") && input.ratio === "4:5" && !input.referenceAssetId) {
+    // B3 (Copilot review round 1): OpenAI 4:5 maps to a native 2:3 render, so crop it whether or not a
+    // reference image was used (references go through /v1/images/edits at that same 2:3 size). xAI can't
+    // reach the reference case: it rejects references before sending.
+    if (input.ratio === "4:5" && (input.provider === "openai" || (input.provider === "xai" && !input.referenceAssetId))) {
       display = putImage(d.imagesDir, await cropTo(out.image, 4, 5));
       const crop = input.provider === "xai" ? "Made at 3:4, cropped to 4:5" : "Made at 2:3, cropped to 4:5";
       note = note ? `${note} · ${crop}` : crop;

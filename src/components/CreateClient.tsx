@@ -112,21 +112,14 @@ export default function CreateClient(props: { ratios: readonly string[]; creator
     withCreators?: Array<{ id: string; n: number }>
   ) {
     setBusy(true); setRun(null); setNetError(null); setSaved({}); setDirectPostMsg(null);
-    let creatorsToSend = withCreators ?? chosen.map((c) => ({ id: c.id, n: counts[c.id] ?? 1 }));
+    const creatorsToSend = withCreators ?? chosen.map((c) => ({ id: c.id, n: counts[c.id] ?? 1 }));
     const body: Record<string, unknown> = { prompt, ratio };
     if (attachedAsset) {
-      if (useAsReference) {
-        const refChosen = chosen.filter((c) => c.maxReferenceImages > 0).map((c) => ({ id: c.id, n: counts[c.id] ?? 1 }));
-        if (refChosen.length > 0) {
-          creatorsToSend = withCreators ?? refChosen;
-          body.referenceAssetId = attachedAsset.assetId;
-        } else {
-          // If only non-reference creators (like Grok) are ticked, still pass the image via sourceAssetId so it uses the attached photo
-          body.sourceAssetId = attachedAsset.assetId;
-        }
-      } else {
-        body.sourceAssetId = attachedAsset.assetId;
-      }
+      // B3 (Copilot review round 1): never silently drop a ticked card. With "Use as reference" the whole
+      // selection goes to the server, which refuses any creator that can't take a reference with an
+      // explicit message; filtering here made the UI show a card that produced no job.
+      if (useAsReference) body.referenceAssetId = attachedAsset.assetId;
+      else body.sourceAssetId = attachedAsset.assetId;
     }
     body.creators = creatorsToSend;
     const r = await postJson<{ runId?: string; blocked?: boolean; run?: RunView; error?: string }>("/api/run", body);

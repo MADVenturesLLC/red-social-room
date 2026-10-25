@@ -7,6 +7,7 @@ import { insertAsset, openaiDepsOf } from "../src/server/execute.ts";
 import { putImage } from "../src/server/store.ts";
 import { saveUploadedPost, searchPosts, LibraryError } from "../src/server/library.ts";
 import { startRun, runView, RunInputError } from "../src/server/runs.ts";
+import { checkOpenAiKey } from "../src/server/openai/adapter.ts";
 
 async function waitRun(t: ReturnType<typeof makeApp>, runId: string, ms = 2000) {
   const t0 = Date.now();
@@ -209,5 +210,107 @@ test("OpenAI (ChatGPT / GPT Image) creator card: generates and edits with attach
     assert.equal(vEdit.jobs[0].parentAssetId, stored.id);
   } finally {
     t.cleanup();
+  }
+});
+
+test("OpenAI reference run at 4:5: sends 1024x1536 to /v1/images/edits and shows the 2:3→4:5 crop (B3 review round, finding 2)", async () => {
+  const outPng = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#117744" } }).png().toBuffer();
+  const base = fakeProviders();
+  let editSize: FormDataEntryValue | null = null;
+  const t = makeApp({
+    fetch: async (url, init) => {
+      const u = new URL(url);
+      if (u.hostname === "api.openai.com") {
+        if (u.pathname === "/v1/models") return jsonRes(200, { data: [{ id: "gpt-image-1" }] });
+        if (u.pathname === "/v1/images/edits") {
+          const form = init?.body as FormData;
+          editSize = form.get("size");
+          return jsonRes(200, {
+            data: [{ b64_json: outPng.toString("base64") }],
+            usage: { input_tokens: 10, output_tokens: 10 },
+          });
+        }
+      }
+      return base.fetch(url, init);
+    },
+  });
+  try {
+    openaiDepsOf(t.app).keys.save("dummy_TESTONLY_oAiXkQzWvRtYbNmHpCsDfJaEeUuIiOoPpAaSsDdFfGgHhJjKk");
+    const srcBytes = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#224488" } }).jpeg().toBuffer();
+    const stored = putImage(t.app.imagesDir, srcBytes);
+    insertAsset(t.app.db, stored);
+
+    const r = startRun(t.app, {
+      prompt: "Make the subject cinematic",
+      ratio: "4:5",
+      creators: [{ id: "openai", n: 1 }],
+      referenceAssetId: stored.id,
+    });
+    await waitRun(t, r.runId);
+    assert.equal(runView(t.app, r.runId)!.status, "ok");
+    assert.equal(editSize, "1024x1536");
+    const gen = t.app.db.prepare("SELECT display_note, output_asset_id, display_asset_id FROM generations WHERE run_id = ?").get(r.runId) as
+      { display_note: string | null; output_asset_id: string; display_asset_id: string };
+    assert.equal(gen.display_note, "Made at 2:3, cropped to 4:5");
+    assert.notEqual(gen.display_asset_id, gen.output_asset_id);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("startRun: a missing attached picture says 'attached picture', not 'reference image' (B3 review round, finding 5)", async () => {
+  const p = fakeProviders();
+  const t = makeApp({ fetch: p.fetch });
+  try {
+    assert.throws(
+      () => startRun(t.app, {
+        prompt: "Enhance this photo",
+        ratio: "1:1",
+        creators: [{ id: "openai", n: 1 }],
+        sourceAssetId: "f".repeat(64),
+      }),
+      (err: unknown) => err instanceof RunInputError && err.message.includes("attached picture")
+    );
+    // The reference wording is unchanged for the reference path.
+    assert.throws(
+      () => startRun(t.app, {
+        prompt: "A vase",
+        ratio: "1:1",
+        creators: [{ id: "google", n: 1 }],
+        referenceAssetId: "f".repeat(64),
+      }),
+      (err: unknown) => err instanceof RunInputError && err.message.includes("reference image")
+    );
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("OpenAI key check: a 200 from /v1/models without gpt-image-1 is refused with the model named (B3 review round, finding 3)", async () => {
+  const base = fakeProviders();
+  const makeFetch = (ids: string[]) => async (url: string, init?: RequestInit) => {
+    const u = new URL(url);
+    if (u.hostname === "api.openai.com" && u.pathname === "/v1/models") return jsonRes(200, { data: ids.map((id) => ({ id })) });
+    return base.fetch(url, init ?? {});
+  };
+  const key = "dummy_TESTONLY_oAiXkQzWvRtYbNmHpCsDfJaEeUuIiOoPpAaSsDdFfGgHhJjKk";
+
+  const t1 = makeApp({ fetch: makeFetch(["dall-e-3", "gpt-4o"]) });
+  try {
+    openaiDepsOf(t1.app).keys.save(key);
+    const r = await checkOpenAiKey(openaiDepsOf(t1.app), { force: true });
+    assert.equal(r.ok, false);
+    assert.match((r as { message: string }).message, /cannot see gpt-image-1/);
+  } finally {
+    t1.cleanup();
+  }
+
+  const t2 = makeApp({ fetch: makeFetch(["gpt-image-1", "gpt-4o"]) });
+  try {
+    openaiDepsOf(t2.app).keys.save(key);
+    const r = await checkOpenAiKey(openaiDepsOf(t2.app), { force: true });
+    assert.deepEqual(r, { ok: true, versionListing: "gpt-image-1" });
+  } finally {
+    t2.cleanup();
   }
 });

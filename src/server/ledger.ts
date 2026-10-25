@@ -68,7 +68,7 @@ export function reserve(db: DB, p: ReserveInput): { id: string; warn: boolean } 
     const cap = capMicros(db);
     if (used + p.estimateMicros > cap) {
       const heldText = held > 0 ? `, including ${fmtUsd(held)} held for unchecked calls` : "";
-      refused = new CapRefused(`Monthly cap ${fmtUsd(cap)} reached (${fmtUsd(used)} counted across xAI and Google${heldText}). Raise the cap in Settings or wait until ${nextMonthStartText(month)}.`, used, cap, held);
+      refused = new CapRefused(`Monthly cap ${fmtUsd(cap)} reached (${fmtUsd(used)} counted this month${heldText}). Raise the cap in Settings or wait until ${nextMonthStartText(month)}.`, used, cap, held);
       db.prepare("INSERT INTO events (created_at, kind, detail) VALUES (?, 'cap_refused', ?)").run(isoNY(now), JSON.stringify({ provider: p.provider, model: p.model, kind: p.kind, estimate_micro_usd: p.estimateMicros, used_micro_usd: used, cap_micro_usd: cap, generation_id: p.generationId }));
       return null;
     }
