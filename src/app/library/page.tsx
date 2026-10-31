@@ -1,6 +1,7 @@
 import { getApp } from "../../server/app.ts";
 import { listTags, searchPosts } from "../../server/library.ts";
 import DeletePostButton from "../../components/DeletePostButton.tsx";
+import ShareAssetButton from "../../components/ShareAssetButton.tsx";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +59,7 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
               {tagsOf.get(p.id)?.length ? <> · {tagsOf.get(p.id)!.map((t) => <span key={t} className="tag">{t}</span>)}</> : null}
               <br />
               <a href={`/design/${p.id}`}>{p.designed ? "Edit design" : "Design"}</a> · <a href={`/captions/${p.id}`}>Captions</a> · <a href={`/export/${p.id}`}>Export</a> · <a href={`/?reuse=${p.id}`}>Reuse</a>
+              {" "}<ShareAssetButton assetId={p.asset_id} prompt={p.prompt} filename={`rsr-${p.id}.jpg`} />
               {" "}<DeletePostButton id={p.id} />
             </figcaption>
           </figure>

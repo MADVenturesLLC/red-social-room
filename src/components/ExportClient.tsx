@@ -6,6 +6,7 @@
 import { useRef, useState } from "react";
 import { postJson } from "./post.ts";
 import { frameFor } from "../lib/crop-frame.ts";
+import { shareImage } from "../lib/share.ts";
 
 interface Preset { id: string; platform: string; label: string; width: number; height: number; ratio: string; safeZone: { x: number; y: number; w: number; h: number } | null; maxBytes: number | null }
 interface Rendition { presetId: string; platform: string; label: string; width: number; height: number; assetId: string; bytes: number; method: string; createdAt: string; upscaledFrom: number | null; note: string | null; ratioNote: string | null; safeZone: { x: number; y: number; w: number; h: number } | null; stale: boolean }
@@ -109,6 +110,15 @@ export default function ExportClient({ post, renditions: rend0, presets, fallbac
 
   const toggle = (set: Set<string>, id: string): Set<string> => { const n = new Set(set); if (n.has(id)) n.delete(id); else n.add(id); return n; };
 
+  // C1: hand the finished rendition to the phone's share sheet (Instagram, Messages, AirDrop).
+  const shareOne = async (preset: Preset, r: Rendition) => {
+    setMessage(null); setNotice(null);
+    const out = await shareImage(`/api/assets/${r.assetId}`, `rsr-${post.id}-${preset.id}.jpg`, "Red Social Room", post.prompt);
+    if (out === "shared") setNotice(`Shared ${preset.label}.`);
+    else if (out === "downloaded") setNotice(`This browser has no share sheet — downloaded ${preset.label} instead.`);
+    else if (out === "failed") setMessage("Sharing failed — open the image and save it, or use the ZIP.");
+  };
+
   const openCrop = (presetId: string) => {
     setCropOpen(presetId); setCropCx(0.5); setCropCy(0.5); setCropScale(1); setMessage(null);
   };
@@ -164,6 +174,7 @@ export default function ExportClient({ post, renditions: rend0, presets, fallbac
                   ? <button type="button" onClick={() => setCropOpen(null)}>Close crop</button>
                   : <button type="button" className="secondary" disabled={!!busy[p.id]} onClick={() => openCrop(p.id)}>Adjust crop</button>}
                 <button type="button" className="secondary" disabled={!!busy[p.id]} onClick={() => void widen(p.id)}>AI extend (Nano Banana 2) — one edit ≈ $0.08</button>
+                <button type="button" className="secondary" disabled={!!busy[p.id] || r.stale} data-share={p.id} onClick={() => void shareOne(p, r)}>Share…</button>
                 <button type="button" className="danger-link mini" disabled={!!busy[p.id]} onClick={() => void remove(p.id)}>Remove</button>
               </div>
               {busy[p.id] ? <p className="muted mini">{busy[p.id]}</p> : null}

@@ -151,6 +151,14 @@ B1 (Amendment 1, Oct 10 revision) makes the app say who is using it and keeps sp
 - **View-only is enforced on the server**: `/api/run`, `/api/edit`, `/api/generate`, `/api/captions`, `/api/optimize` and the widen call answer `403` before any work, so no provider request and no ledger row. The UI also disables Generate/Edit/Optimize and shows a plain note; view-only accounts can still upload a picture, save it as a post, design, export, and browse the Library. If `/api/whoami` cannot answer, the Create controls fail closed (spend stays off).
 - **Who saved what**: the header shows "Signed in as Michael (Founder)" (or "View only — <email>"), and every library save records the name in `posts.created_by`, shown on the Library card.
 
+### C1: Install it, share it
+
+C1 closes the gap between "the image is exported" and "the image is on Instagram":
+
+- **Installable app**: a web-app manifest (`/manifest.webmanifest`), home-screen icons (192/512, a maskable 512, a 180 Apple touch icon) and a minimal service worker, so the door can be added to the home screen and opens without browser chrome. `scripts/make-icons.mjs` regenerates the icons from one SVG.
+- **Share sheet**: every Export rendition has a **Share…** button, and every Library card has **Share** — on a phone this opens the native sheet (Instagram, Messages, AirDrop…) with the image attached and the prompt as the message; on a desktop without the Web Share API it downloads the file instead, exactly as before.
+- **No caching of app data**: the service worker passes GETs to the network and answers 503 when offline; it never caches API responses, the ledger or the library. POSTs are untouched.
+
 ### Run it locally (no Docker)
 
 ```
